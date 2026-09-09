@@ -3,22 +3,27 @@
  *
  * One always-on-top transparent window morphing between two states:
  *
- *   collapsed  a small orb (whale icon; spinning light ring + count badge
- *              while sessions run; attention dot for approval / question /
- *              unread-done; grey while the backend is stale/missing);
- *   expanded   the orb plus a bubble card listing every active session —
- *              the same rows, flash cues and click-to-jump semantics the
- *              old full-card overlay had.
+ *   collapsed  a small orb (official whale icon; spinning light ring + count
+ *              badge while sessions run; attention dot for approval /
+ *              question / unread-done; grey while the backend is stale);
+ *   expanded   the orb plus a bubble card listing every active session.
+ *
+ * Geometry model (anchor-pinned): the ORB is the anchor and never moves for
+ * expand/collapse. The window's top-left corner is pinned at the anchor when
+ * the bubble opens right, and offset left by the bubble column when it opens
+ * left; expansion only ever grows the window DOWNWARD (bottom edge). The
+ * window width is constant (orb strip + bubble column) so the horizontal
+ * edge never jumps mid-animation; the side flips only at drag-end, and then
+ * behind a brief hide/show so no ghost jump is visible.
  *
  * The state file written by the cordis host half (~/.dsh/desktop-shell-state
  * .json) remains the ONLY input — no port, no token, no DSH transport.
  *
  * Interaction contract (renderer drives, this process owns geometry):
- *   overlay:set-expanded  renderer hover/state-change → grow or shrink the
- *                         window around the orb anchor
- *   overlay:orb-drag      manual orb dragging (pointer deltas; the window is
- *                         focusable:false so OS drag regions cannot coexist
- *                         with clicks) — anchor persisted on orb-drag-end
+ *   overlay:set-expanded  renderer hover/state-change → grow/shrink bottom
+ *   overlay:orb-drag      pointer deltas in SCREEN coords (clientX would
+ *                         feed the window move back into the delta and
+ *                         oscillate) — anchor persisted on orb-drag-end
  *   overlay:orb-click     raise + focus the main window, collapse
  *   overlay:row-click     jump to that session, clear its unread mark
  *
@@ -44,8 +49,10 @@ const ROW_HEIGHT = 44
 const HEADER_HEIGHT = 52
 const PADDING = 18
 const MAX_ROWS = 6
-const ORB_MARGIN = 8 // per side: ring glow + badge overhead headroom
-const BUBBLE_W = 300 // bubble column width in the expanded window
+const ORB_MARGIN = 8 // per side: ring + badge headroom inside the strip
+const BUBBLE_W = 300 // bubble column width (292 card + slack)
+const BUBBLE_GAP = 6 // strip edge → bubble edge
+const BUBBLE_TOP = 8 // bubble top aligns with the circle's top
 const BUBBLE_H_MAX = 480
 const BUBBLE_H_MIN = 110
 
@@ -61,6 +68,7 @@ const unread = new Map()
 let expanded = false // renderer keeps the authority; this mirrors geometry
 let lastSide = 'left' // bubble placed left of the orb
 let dragging = false
+let orbHovering = false
 
 function clamp(v, lo, hi) {
   return Math.min(Math.max(v, lo), hi)
@@ -123,7 +131,7 @@ function buildDisplay() {
     rows.push({ id, name: u.name, kind: 'done', at: u.at })
   }
   const order = { approval: 0, question: 1, running: 2, done: 3 }
-  rows.sort((a, b) => order[a.kind] - order[b.kind] || b.at - a.at)
+  rows.sort((a, b) => (order[a.kind] - order[b.kind]) || (b.at - a.at))
 
   if (mode === 'idle' || mode === 'active') {
     if (runningCount === 0) mode = 'idle'
@@ -137,65 +145,56 @@ function buildDisplay() {
   return { mode, runningCount, rows, attention, now }
 }
 
-// ---------- geometry ----------
+// ---------- geometry (anchor-pinned) ----------
 
 function orbArea(cfg) {
   return clamp(cfg.orbSize, 40, 96) + ORB_MARGIN * 2
 }
 
+function windowWidth(cfg) {
+  return orbArea(cfg) + BUBBLE_GAP + BUBBLE_W
+}
+
+/** Default anchor: top-right corner (strip top-left). */
 function anchorPos(cfg) {
   if (cfg.pos) return { x: cfg.pos.x, y: cfg.pos.y }
   const wa = screen.getPrimaryDisplay().workArea
   return { x: wa.x + wa.width - orbArea(cfg) - 16, y: wa.y + 16 }
 }
 
-function clampToVisuals(x, y, cfg) {
-  const d = screen.getDisplayNearestPoint({ x, y })
-  const wa = d.workArea
-  const s = orbArea(cfg)
-  return {
-    x: Math.min(Math.max(x, wa.x - s + 60), wa.x + wa.width - 60),
-    y: Math.min(Math.max(y, wa.y), wa.y + wa.height - 60),
-  }
-}
-
-/** Bounds of the collapsed orb window at its anchor. */
-function collapsedBounds(cfg) {
-  const p = anchorPos(cfg)
-  const s = orbArea(cfg)
-  return { x: p.x, y: p.y, width: s, height: s }
-}
-
-/** Current orb anchor (window top-left when collapsed; derived from the
- *  expanded rect otherwise). */
+/** The anchor (orb strip top-left) implied by the current window rect. */
 function getAnchor(cfg) {
   if (!overlayWin || overlayWin.isDestroyed()) return anchorPos(cfg)
   const b = overlayWin.getBounds()
-  if (!expanded) return { x: b.x, y: b.y }
   const s = orbArea(cfg)
-  const x = b.x + (lastSide === 'left' ? BUBBLE_W : 0)
-  const y = b.y + Math.round((b.height - s) / 2)
-  return { x, y }
+  const W = windowWidth(cfg)
+  return { x: b.x + (lastSide === 'left' ? W - s : 0), y: b.y }
 }
 
+/** Target rect for the current state. The orb anchor never moves: x is a
+ *  pure function of (anchor, side), y is the anchor y, and expansion only
+ *  grows the height downward. Clamping is generous (screen bounds, not work
+ *  area) so the bubble may hang over the taskbar rather than shove the orb. */
 function computeBounds(cfg, display) {
   const s = orbArea(cfg)
-  if (!expanded) return { ...collapsedBounds(cfg), side: lastSide }
   const a = getAnchor(cfg)
-  const rows = Math.max(1, Math.min(MAX_ROWS, display.rows.length))
-  const bubbleH = clamp(HEADER_HEIGHT + PADDING + rows * ROW_HEIGHT + (display.more ? 22 : 0) + 8, BUBBLE_H_MIN, BUBBLE_H_MAX)
-  const H = Math.max(s, bubbleH)
-  const wa = screen.getDisplayNearestPoint({ x: a.x + Math.round(s / 2), y: a.y + Math.round(s / 2) }).workArea
-  const roomRight = wa.x + wa.width - (a.x + s)
-  const roomLeft = a.x - wa.x
-  const side = roomRight + 16 >= BUBBLE_W || roomLeft < BUBBLE_W ? 'right' : 'left'
-  const x = side === 'right' ? a.x : a.x - BUBBLE_W
-  const y = a.y - Math.round((H - s) / 2)
+  const W = windowWidth(cfg)
+  let H = s
+  if (expanded) {
+    const rows = Math.max(1, Math.min(MAX_ROWS, display && display.rows ? display.rows.length : 1))
+    const bubbleH = clamp(HEADER_HEIGHT + PADDING + rows * ROW_HEIGHT + (display && display.more ? 22 : 0) + 8, BUBBLE_H_MIN, BUBBLE_H_MAX)
+    H = Math.max(s, BUBBLE_TOP + bubbleH + 6)
+  }
+  const bb = screen.getDisplayNearestPoint({ x: a.x + Math.round(s / 2), y: a.y + Math.round(s / 2) }).bounds
+  const roomRight = bb.x + bb.width - (a.x + s)
+  const roomLeft = a.x - bb.x
+  const side = roomRight + BUBBLE_GAP >= BUBBLE_W || roomLeft < BUBBLE_W ? 'right' : 'left'
   lastSide = side
+  const x = side === 'right' ? a.x : a.x - (W - s)
   return {
-    x: clamp(x, wa.x, wa.x + wa.width - (s + BUBBLE_W)),
-    y: clamp(y, wa.y, Math.max(wa.y, wa.y + wa.height - H)),
-    width: s + BUBBLE_W,
+    x: clamp(x, bb.x - (W - s) + 60, bb.x + bb.width - 60),
+    y: clamp(a.y, bb.y, Math.max(bb.y, bb.y + bb.height - s - 20)),
+    width: W,
     height: H,
     side,
   }
@@ -218,10 +217,14 @@ function sendDisplay() {
     now: full.now,
   }
   const want = computeBounds(cfg, display)
-  const b = overlayWin.getBounds()
-  if (!dragging && (b.x !== want.x || b.y !== want.y || b.width !== want.width || b.height !== want.height)) {
-    overlayWin.setBounds({ x: want.x, y: want.y, width: want.width, height: want.height })
+  display.side = want.side // class must match the geometry we just applied
+  if (!dragging) {
+    const b = overlayWin.getBounds()
+    if (b.x !== want.x || b.y !== want.y || b.width !== want.width || b.height !== want.height) {
+      overlayWin.setBounds({ x: want.x, y: want.y, width: want.width, height: want.height })
+    }
   }
+  applyIgnore()
   if (!overlayWin.isVisible()) overlayWin.showInactive()
   overlayWin.webContents.send('overlay:state', display)
 }
@@ -258,16 +261,12 @@ function stopWatching() {
 function createOverlayWindow() {
   if (overlayWin && !overlayWin.isDestroyed()) return overlayWin
   const cfg = loadOverlay()
-  const start = clampToVisuals(
-    cfg.pos ? cfg.pos.x : collapsedBounds(cfg).x,
-    cfg.pos ? cfg.pos.y : collapsedBounds(cfg).y,
-    cfg,
-  )
+  const b0 = computeBounds(cfg, { rows: [], more: 0 })
   overlayWin = new BrowserWindow({
-    width: orbArea(cfg),
-    height: orbArea(cfg),
-    x: start.x,
-    y: start.y,
+    width: b0.width,
+    height: b0.height,
+    x: b0.x,
+    y: b0.y,
     show: false,
     frame: false,
     transparent: true,
@@ -289,6 +288,7 @@ function createOverlayWindow() {
     },
   })
   overlayWin.setAlwaysOnTop(true, 'screen-saver')
+  applyIgnore()
   overlayWin.loadFile(PAGE)
   overlayWin.on('closed', () => {
     overlayWin = null
@@ -297,11 +297,28 @@ function createOverlayWindow() {
   return overlayWin
 }
 
+/** The window is always strip+bubble wide; the empty bubble column must not
+ *  eat desktop clicks. Collapsed + not hovering the orb → ignore the mouse
+ *  (forward:true still delivers hover so expand can trigger). Anything the
+ *  user can click (orb hover, expanded bubble, drag) captures normally. */
+function applyIgnore() {
+  if (!overlayWin || overlayWin.isDestroyed()) return
+  const shouldIgnore = !expanded && !orbHovering && !dragging
+  try { overlayWin.setIgnoreMouseEvents(shouldIgnore, { forward: true }) } catch { /* pre-ready */ }
+}
+
 function sendConfig() {
   const cfg = loadOverlay()
   const payload = { opacity: cfg.opacity, theme: cfg.theme, fontSize: cfg.fontSize, orbSize: cfg.orbSize, hideMs: cfg.bubbleTimeout }
   if (overlayWin && !overlayWin.isDestroyed()) overlayWin.webContents.send('overlay:config', payload)
   if (settingsWin && !settingsWin.isDestroyed()) settingsWin.webContents.send('overlay:config', cfg)
+}
+
+/** Recompute + apply the rect for the current state (reset, orbSize change). */
+function applyBoundsNow(cfg) {
+  if (!overlayWin || overlayWin.isDestroyed()) return
+  const want = computeBounds(cfg, { rows: [], more: 0 })
+  overlayWin.setBounds({ x: want.x, y: want.y, width: want.width, height: want.height })
 }
 
 // ---------- ipc ----------
@@ -320,7 +337,7 @@ function registerIpc() {
 
   ipcMain.on('overlay:set-expanded', (_e, v) => {
     expanded = !!v
-    sendDisplay()
+    sendDisplay() // grows/shrinks the bottom edge only — orb never moves
   })
 
   ipcMain.on('overlay:orb-drag', (_e, d) => {
@@ -329,11 +346,15 @@ function registerIpc() {
     const dy = d && Number.isFinite(d.dy) ? d.dy : 0
     if (!dx && !dy) return
     dragging = true
+    const cfg = loadOverlay()
+    const s = orbArea(cfg)
     const b = overlayWin.getBounds()
-    const wa = screen.getDisplayNearestPoint({ x: b.x, y: b.y }).workArea
+    const bb = screen.getDisplayNearestPoint({ x: b.x, y: b.y }).bounds
+    const leftLimit = bb.x - (b.width - s) + 60 // keep 60px of the strip visible
+    const rightLimit = bb.x + bb.width - 60
     overlayWin.setPosition(
-      clamp(b.x + dx, wa.x - 40, wa.x + wa.width - 40),
-      clamp(b.y + dy, wa.y, wa.y + wa.height - 40),
+      clamp(b.x + dx, leftLimit, rightLimit),
+      clamp(b.y + dy, bb.y, Math.max(bb.y, bb.y + bb.height - s - 20)),
     )
   })
 
@@ -342,9 +363,26 @@ function registerIpc() {
     dragging = false
     const cfg = loadOverlay()
     const a = getAnchor(cfg)
-    const p = clampToVisuals(a.x, a.y, cfg)
-    saveOverlay({ pos: { x: p.x, y: p.y } })
+    saveOverlay({ pos: { x: a.x, y: a.y } })
+    const prevSide = lastSide
+    const want = computeBounds(cfg, { rows: [], more: 0 })
+    if (want.side !== prevSide) {
+      // The strip moves to the other window edge — hide while the rect and
+      // the renderer class swap so no ghost jump is visible.
+      overlayWin.hide()
+      overlayWin.setBounds({ x: want.x, y: want.y, width: want.width, height: want.height })
+      sendDisplay()
+      setTimeout(() => {
+        if (overlayWin && !overlayWin.isDestroyed()) overlayWin.showInactive()
+      }, 40)
+      return
+    }
     sendDisplay()
+  })
+
+  ipcMain.on('overlay:orb-hover', (_e, v) => {
+    orbHovering = !!v
+    applyIgnore()
   })
 
   ipcMain.on('overlay:orb-click', () => {
@@ -371,12 +409,7 @@ function registerIpc() {
   ipcMain.on('overlay:settings-reset-pos', () => {
     saveOverlay({ pos: null })
     expanded = false
-    if (overlayWin && !overlayWin.isDestroyed()) {
-      const cfg = loadOverlay()
-      const b = collapsedBounds(cfg)
-      const p = clampToVisuals(b.x, b.y, cfg)
-      overlayWin.setBounds({ x: p.x, y: p.y, width: b.width, height: b.height })
-    }
+    if (overlayWin && !overlayWin.isDestroyed()) applyBoundsNow(loadOverlay())
     sendConfig()
     sendDisplay()
   })
@@ -421,6 +454,7 @@ export function applyOverlayConfig() {
   createOverlayWindow()
   sendConfig()
   startWatching()
+  sendDisplay() // picks up orbSize changes (window width depends on it)
 }
 
 /** Open (or focus) the small settings window from the tray. */
@@ -460,12 +494,7 @@ export function openOverlaySettings() {
 export function resetOverlayPosition() {
   expanded = false
   saveOverlay({ pos: null })
-  if (overlayWin && !overlayWin.isDestroyed()) {
-    const cfg = loadOverlay()
-    const b = collapsedBounds(cfg)
-    const p = clampToVisuals(b.x, b.y, cfg)
-    overlayWin.setBounds({ x: p.x, y: p.y, width: b.width, height: b.height })
-  }
+  if (overlayWin && !overlayWin.isDestroyed()) applyBoundsNow(loadOverlay())
   sendDisplay()
 }
 

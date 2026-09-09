@@ -12,5 +12,6 @@ contextBridge.exposeInMainWorld('overlayAPI', {
   orbDrag: (dx, dy) => ipcRenderer.send('overlay:orb-drag', { dx, dy }),
   orbDragEnd: () => ipcRenderer.send('overlay:orb-drag-end'),
   orbClick: () => ipcRenderer.send('overlay:orb-click'),
+  orbHover: (v) => ipcRenderer.send('overlay:orb-hover', !!v),
   ready: () => ipcRenderer.send('overlay:ready'),
 })
