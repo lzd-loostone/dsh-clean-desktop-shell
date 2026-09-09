@@ -232,11 +232,13 @@ npm run pack    # package NSIS (Win) / DMG (mac)
 ## Changelog
 
 ### 0.3.0
-- **Overlay redesigned as a task orb**: the solid card becomes a round floating orb in a screen corner — a static whale glyph at rest; while tasks run, a conic light sweeps the ring and a top-right badge counts running sessions (shown from 1 up).
-- **Bubble details**: hovering the orb, or a state change (needs approval / needs answer / task done), pops a frosted-glass bubble listing every session and its status; the bubble opens left or right depending on remaining screen space and auto-collapses after 5s by default (hover pauses the timer); clicking a row jumps straight to that session via the documented client face (`ctx.sessions.open`).
-- **Interaction**: the orb is freely draggable (clamped back into the work area); clicking it collapses the bubble and brings the main window to the front.
-- **New settings**: the overlay settings window gains "orb size" (40-96px) and "bubble auto-collapse" (2-15s) sliders, applied live.
-- Removed the old card's right-edge width drag (bubble width is content-sized; the position setting is now just "reset position"); per agreement, 0.2.x overlay.width is not carried over.
+- **Task orb, three-window architecture**: the whale disc docks half-hidden at the screen's left/right edge (circle center on the edge line, zero gap); hover slides it out and opens the session bubble (orb ↔ bubble act as one hover zone with a 350ms relay), collapsing when you leave; drag follows the pointer and snaps back to the nearest horizontal edge with a bounce on release.
+- **Status at a glance**: a conic light sweeps the ring while tasks run and a count badge shows (from 1 up); an attention dot marks needs-approval (amber) / needs-answer (pink) / done-unread (white) — badge and dot flip to the visible half depending on the docked edge; the whole orb greys out when the backend is stale.
+- **Left-click** raises the main window (and collapses the bubble); **right-click** opens a custom frosted-glass menu (refresh window / start backend, or restart + stop / orb settings) that closes on blur, flips near screen edges and is mutually exclusive with the bubble.
+- **Bubble window**: a frosted card popping from the orb's inner side (with a tail pointing at the whale) listing every session and its status (running / needs approval / needs answer / done + unread dot); clicking a row jumps straight to that session via the documented client face (`ctx.sessions.open`), clicking blank space just raises the main window; any click collapses it; state changes pop it open once and it auto-collapses after a configurable 2–15s.
+- **Settings**: the orb settings window is now a frameless rounded card with content-driven auto height; orb size (40-96px), background opacity, font size, dark/light theme and bubble auto-collapse all apply live.
+- **Official icon**: the orb and the settings title bar use the project's own black-whale logo (auto-inverted to white on the dark theme).
+- Breaking: `overlay.pos` became `side` + `anchorY` (0.2.x card position/width settings are not carried over).
 
 ### 0.2.1
 - New caption safe-area spacer inside the shell: Electron's native window buttons (titleBarOverlay) float above the page, and the official right-aligned header utilities (「导出日志」/export log) landed underneath them. The desktop shell's client half registers an invisible spacer cell through the documented Slots face (`conversation.session.header.utilities`), shifting every header utility 148px left of the native overlay. Active only inside the shell (`window.shellAPI` present); plain-browser users are unaffected.
