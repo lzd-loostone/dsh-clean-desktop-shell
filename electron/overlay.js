@@ -15,7 +15,7 @@
  * from config.overlay (tray 「任务悬浮窗」 submenu).
  */
 import { app, BrowserWindow, ipcMain, screen } from 'electron'
-import { existsSync, readFileSync, unwatchFile, watchFile } from 'node:fs'
+import { existsSync, readFileSync, unwatchFile, watchFile, appendFileSync, statSync, rmSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -46,6 +46,21 @@ function clamp(v, lo, hi) {
 
 function stateFile() {
   return join(process.env.DSH_HOME || join(homedir(), '.dsh'), 'desktop-shell-state.json')
+}
+
+/** Deep-link tracing: every row-click hop (main/preload/client) appends a
+ *  line here so a jump failure pinpoints its broken stage. */
+function traceFile() {
+  return join(app.getPath('userData'), 'overlay-trace.log')
+}
+function trace(msg) {
+  try {
+    const f = traceFile()
+    try {
+      if (statSync(f).size > 256 * 1024) rmSync(f, { force: true }) // rolling cap
+    } catch { /* first write */ }
+    appendFileSync(f, new Date().toISOString() + ' ' + msg + '\n', 'utf8')
+  } catch { /* tracing must never break the overlay */ }
 }
 
 let overlayWin = null
@@ -255,7 +270,10 @@ function registerIpc() {
     sendDisplay()
   })
 
+  ipcMain.on('shell:trace', (_e, msg) => trace(String(msg).slice(0, 300)))
+
   ipcMain.on('overlay:row-click', (_e, id) => {
+    trace('row-click ' + JSON.stringify(id))
     if (typeof id === 'string' && unread.has(id)) unread.delete(id)
     const main = getMainWindow && getMainWindow()
     if (main && !main.isDestroyed()) {
@@ -265,7 +283,7 @@ function registerIpc() {
       if (typeof id === 'string') {
         // Hand the session id to the page; the client plugin routes it to
         // the documented ctx.sessions.open() command (see src/client.js).
-        try { main.webContents.send('shell:goto-session', id) } catch { /* page not loaded yet */ }
+        try { main.webContents.send('shell:goto-session', id); trace('sent goto ' + id) } catch (err) { trace('send failed: ' + (err && err.message)) }
       }
     }
     sendDisplay()

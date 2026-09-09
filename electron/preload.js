@@ -26,7 +26,15 @@ contextBridge.exposeInMainWorld('shellAPI', {
   // Overlay row clicks arrive as 'shell:goto-session'; the page's client
   // plugin (dsh-clean-desktop-shell client half) listens here and routes
   // the id to the documented ctx.sessions.open() command.
-  onGotoSession: (cb) => ipcRenderer.on('shell:goto-session', (_e, id) => cb(id)),
+  onGotoSession: (cb) => {
+    try { ipcRenderer.send('shell:trace', 'preload listener armed') } catch (e) {}
+    ipcRenderer.on('shell:goto-session', (_e, id) => {
+      try { ipcRenderer.send('shell:trace', 'preload recv ' + id) } catch (e) {}
+      cb(id)
+    })
+  },
+  // Echo channel for the client plugin's deep-link tracing.
+  gotoTrace: (msg) => { try { ipcRenderer.send('shell:trace', 'client ' + msg) } catch (e) {} },
 })
 
 window.addEventListener('DOMContentLoaded', () => {
