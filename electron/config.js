@@ -27,14 +27,15 @@ const DEFAULTS = {
   // True once the first-run "create a desktop shortcut?" prompt was shown
   // (so it never nags again). The tray item stays available regardless.
   shortcutAsked: false,
-  // Task overlay window (GPU-monitor style always-on-top status card).
-  //  pos: null → auto (top-right of the primary display); set by dragging.
+  // Task overlay (edge-docked whale orb + hover session bubble).
+  //  side: docked edge 'left'|'right'; anchorY: orb top y (null → near top).
   overlay: {
     enabled: true,
     opacity: 0.86,
     theme: 'dark', // 'dark' | 'light'
     fontSize: 13,
-    pos: null,
+    side: 'right',
+    anchorY: null,
     // orbSize: circle diameter px (40–96). pos: null → auto top-right.
     // bubbleTimeout: auto-collapse delay after a state-change pop-up.
     orbSize: 56,
@@ -68,7 +69,8 @@ export function loadConfig() {
       if (typeof src.opacity === 'number' && src.opacity >= 0.2 && src.opacity <= 1) o.opacity = src.opacity
       if (src.theme === 'dark' || src.theme === 'light') o.theme = src.theme
       if (typeof src.fontSize === 'number' && src.fontSize >= 11 && src.fontSize <= 18) o.fontSize = Math.round(src.fontSize)
-      if (src.pos && typeof src.pos.x === 'number' && typeof src.pos.y === 'number') o.pos = { x: Math.round(src.pos.x), y: Math.round(src.pos.y) }
+      if (src.side === 'left' || src.side === 'right') o.side = src.side
+      if (typeof src.anchorY === 'number' && Number.isFinite(src.anchorY)) o.anchorY = Math.round(src.anchorY)
       if (typeof src.orbSize === 'number' && src.orbSize >= 40 && src.orbSize <= 96) o.orbSize = Math.round(src.orbSize)
       if (typeof src.bubbleTimeout === 'number' && src.bubbleTimeout >= 2000 && src.bubbleTimeout <= 20000) o.bubbleTimeout = Math.round(src.bubbleTimeout)
       cached.overlay = o

@@ -2,24 +2,22 @@
  * System tray: window show/hide, backend management, auto-launch, quit.
  *
  * All backend controls live here (tray only) — the main window stays a
- * pure shell with no backend chrome.
+ * pure shell with no backend chrome. The lifecycle actions themselves are
+ * shared with the orb context menu via backend-actions.js.
  */
 import { Tray, Menu, dialog, nativeImage } from 'electron'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { loadConfig, saveConfig, loadOverlay, saveOverlay } from './config.js'
 import { applyOverlayConfig, openOverlaySettings, resetOverlayPosition } from './overlay.js'
+import { startBackend, restartBackend, stopBackend } from './backend-actions.js'
 import {
   getStatus,
-  start,
-  stop,
-  restart,
   detect,
   findDshInFolder,
   detectInstallFolder,
   onStatusChange,
 } from './service.js'
-import { showProgress, setProgress, closeProgress } from './progress.js'
 import { checkForUpdatesAuto, openRepo } from './update.js'
 import { shortcutSupported, createDesktopShortcut } from './shortcut.js'
 
@@ -31,7 +29,7 @@ const trayIconPath = join(
 // macOS: the filename must end in "Template" (e.g. trayTemplate.png) and
 // Electron will automatically pick trayTemplate@2x.png on Retina.
 // The image itself must be a black silhouette + alpha channel so it
-// inverts correctly in both light and dark menu bars.
+// inverts correctly in both light/dark menu bars.
 
 let trayInstance = null
 let handlers = null
@@ -114,39 +112,17 @@ export function refreshTrayMenu() {
     {
       label: '启动后端',
       enabled: st.status !== 'running' && st.status !== 'starting',
-      click: () => startBackendWithProgress(),
+      click: () => startBackend(),
     },
     {
       label: '重启后端',
       enabled: st.status === 'running' || st.status === 'starting',
-      click: async () => {
-        showProgress({ title: '重启后端', message: '正在重启 dsh 后端…' })
-        try {
-          await restart({ backendPath: loadConfig().backendPath })
-          setProgress({ title: '重启后端', message: '后端已重启', state: 'ok' })
-          setTimeout(closeProgress, 1200)
-        } catch (err) {
-          closeProgress()
-          dialog.showErrorBox('后端重启失败', err.message)
-        }
-        refreshTrayMenu()
-      },
+      click: () => restartBackend(),
     },
     {
       label: '关闭后端',
       enabled: st.status === 'running' || st.status === 'starting',
-      click: async () => {
-        showProgress({ title: '关闭后端', message: '正在关闭 dsh 后端…' })
-        try {
-          await stop()
-          setProgress({ title: '关闭后端', message: '后端已关闭', state: 'ok' })
-          setTimeout(closeProgress, 1200)
-        } catch (err) {
-          closeProgress()
-          dialog.showErrorBox('后端关闭失败', err.message)
-        }
-        refreshTrayMenu()
-      },
+      click: () => stopBackend(),
     },
     { type: 'separator' },
     {
@@ -195,23 +171,12 @@ function statusLabel(st) {
 }
 
 /**
- * Start the backend with a progress window. Shared by the tray menu and
- * the offline screen buttons. Returns true on success.
+ * Start the backend with a progress window. Kept as the tray-flavored
+ * export for the offline screen (window.js); the shared implementation
+ * lives in backend-actions.js.
  */
 export async function startBackendWithProgress() {
-  showProgress({ title: '启动后端', message: '正在启动 dsh 后端…' })
-  try {
-    await start({ backendPath: loadConfig().backendPath })
-    setProgress({ title: '启动后端', message: '后端已启动', state: 'ok' })
-    setTimeout(closeProgress, 1200)
-    return true
-  } catch (err) {
-    closeProgress()
-    dialog.showErrorBox('后端启动失败', err.message)
-    return false
-  } finally {
-    refreshTrayMenu()
-  }
+  return startBackend()
 }
 
 /**

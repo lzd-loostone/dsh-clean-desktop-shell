@@ -3,51 +3,24 @@
 <head>
 <meta charset="utf-8" />
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self'" />
-<title>DSH 任务悬浮窗</title>
+<title>DSH 小鲸鱼</title>
 <style>
   :root {
     --alpha: 0.86;
-    --fs: 13px;
     --orb: 56px;
-    --strip: calc(var(--orb) + 16px);
-    --card-bg: rgba(16, 19, 26, var(--alpha));
-    --card-border: rgba(255, 255, 255, 0.14);
-    --text: rgba(255, 255, 255, 0.95);
-    --text-dim: rgba(255, 255, 255, 0.55);
-    --row-hover: rgba(255, 255, 255, 0.09);
-    --track: rgba(255, 255, 255, 0.06);
     --orb-face: linear-gradient(145deg, rgba(30, 36, 50, var(--alpha)), rgba(14, 17, 24, var(--alpha)));
     --orb-stroke: rgba(255, 255, 255, 0.16);
     --badge-bg: #2563eb;
     --badge-text: #fff;
   }
   body.light {
-    --card-bg: rgba(246, 247, 250, var(--alpha));
-    --card-border: rgba(0, 0, 0, 0.10);
-    --text: rgba(20, 24, 33, 0.95);
-    --text-dim: rgba(20, 24, 33, 0.55);
-    --row-hover: rgba(0, 0, 0, 0.06);
-    --track: rgba(0, 0, 0, 0.05);
     --orb-face: linear-gradient(145deg, rgba(255, 255, 255, var(--alpha)), rgba(232, 236, 243, var(--alpha)));
     --orb-stroke: rgba(0, 0, 0, 0.12);
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html, body { background: transparent; height: 100%; overflow: hidden; }
-  body {
-    font-family: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
-    font-size: var(--fs);
-    color: var(--text);
-    user-select: none;
-    -webkit-font-smoothing: antialiased;
-  }
-  /* The window is always strip+bubble wide; the orb strip is pinned to the
-     anchor edge (left when the bubble opens right, right when it opens left)
-     and the bubble hangs below the strip top. Expand/collapse only changes
-     the window HEIGHT — the orb never moves. */
-  .stage { position: relative; height: 100%; }
-  .orbcol { position: absolute; top: 0; left: 0; width: var(--strip); height: var(--strip); display: flex; align-items: center; justify-content: center; }
-  .stage.side-left .orbcol { left: auto; right: 0; }
-
+  body { user-select: none; -webkit-font-smoothing: antialiased; }
+  .stage { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; }
   .orb {
     position: relative;
     width: var(--orb); height: var(--orb);
@@ -88,6 +61,7 @@
     border-radius: 9px;
     background: var(--badge-bg);
     color: var(--badge-text);
+    font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif;
     font-size: 11px; font-weight: 700; line-height: 18px; text-align: center;
     border: 1.5px solid rgba(10, 12, 18, 0.55);
     display: none;
@@ -111,248 +85,47 @@
   .orb.offline .whale, .orb.missing .whale { opacity: .45; }
   .orb.offline, .orb.missing { filter: saturate(.2); }
   .orb.offline .ring, .orb.missing .ring { opacity: .5; background: conic-gradient(from 0deg, transparent 0 60%, rgba(148, 163, 184, .7) 85%, transparent); animation: spin 6s linear infinite; }
-
-  .bubble {
-    position: absolute;
-    top: 8px; /* aligns with the circle's top edge */
-    width: 292px;
-    background: var(--card-bg);
-    border: 1px solid var(--card-border);
-    border-radius: 14px;
-    backdrop-filter: blur(22px) saturate(150%);
-    -webkit-backdrop-filter: blur(22px) saturate(150%);
-    overflow: hidden;
-    opacity: 0;
-    transform: scale(.88);
-    transition: opacity .16s ease, transform .16s ease;
-    pointer-events: none;
-  }
-  .stage.expanded .bubble { opacity: 1; transform: scale(1); pointer-events: auto; }
-  .side-left .bubble { right: calc(var(--strip) + 6px); transform-origin: right top; }
-  .side-right .bubble { left: calc(var(--strip) + 6px); transform-origin: left top; }
-  .bubble::after {
-    content: "";
-    position: absolute; top: calc(var(--orb) / 2); /* points at the circle center */
-    width: 10px; height: 10px;
-    background: var(--card-bg);
-    border: 1px solid var(--card-border);
-    transform: translateY(-50%) rotate(45deg);
-  }
-  .side-left .bubble::after { right: -6px; border-left: 0; border-bottom: 0; }
-  .side-right .bubble::after { left: -6px; border-right: 0; border-top: 0; }
-  .bar { height: 3px; background: linear-gradient(90deg, #34d399, #60a5fa, #a78bfa, #f472b6); opacity: .85; }
-  .bhead { display: flex; align-items: center; gap: 8px; padding: 12px 14px 8px; }
-  .bhead .title { font-size: calc(var(--fs) + 1.5px); font-weight: 600; letter-spacing: .2px; }
-  .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; background: #34d399; }
-  .dot.pulse { animation: dotpulse 1.6s ease-in-out infinite; }
-  @keyframes dotpulse {
-    0%, 100% { box-shadow: 0 0 0 0 rgba(96, 165, 250, .55); }
-    55% { box-shadow: 0 0 0 6px rgba(96, 165, 250, 0); }
-  }
-  .rows { display: flex; flex-direction: column; gap: 2px; padding: 2px 6px 8px; }
-  .row {
-    display: flex; align-items: center; gap: 9px;
-    height: 40px; padding: 0 10px;
-    border-radius: 9px; cursor: pointer;
-    transition: background-color .12s ease;
-  }
-  .row:hover { background: var(--row-hover); }
-  .row .badge2 { flex: none; font-size: calc(var(--fs) - 2px); font-weight: 600; padding: 2.5px 7px; border-radius: 6px; white-space: nowrap; background: var(--track); }
-  .row.running .badge2 { color: #60a5fa; }
-  .row.approval .badge2 { color: #fbbf24; }
-  .row.question .badge2 { color: #f472b6; }
-  .row.done .badge2 { color: var(--text-dim); }
-  .row .name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .row.done .name { color: var(--text-dim); }
-  .row .unread { flex: none; width: 7px; height: 7px; border-radius: 50%; background: #e2e8f0; box-shadow: 0 0 6px rgba(226,232,240,.8); }
-  body.light .row .unread { background: #334155; box-shadow: none; }
-  .empty { padding: 10px 16px 16px; color: var(--text-dim); font-size: calc(var(--fs) - 1px); }
-  .more { padding: 0 16px 10px; color: var(--text-dim); font-size: calc(var(--fs) - 2px); }
-  .row.flash { animation-duration: 1s; animation-timing-function: ease-out; animation-iteration-count: 2; }
-  .row.approval.flash { animation-name: flashAmber; }
-  .row.question.flash { animation-name: flashPink; }
-  .row.done.flash { animation-name: flashWhite; }
-  @keyframes flashAmber { 0%,100% { background: transparent; } 35% { background: rgba(251, 191, 36, .42); } }
-  @keyframes flashPink  { 0%,100% { background: transparent; } 35% { background: rgba(244, 114, 182, .42); } }
-  @keyframes flashWhite { 0%,100% { background: transparent; } 35% { background: rgba(226, 232, 240, .40); } }
 </style>
 </head>
 <body>
   <div class="stage" id="stage">
-    <div class="orbcol" id="orbcol">
-      <div class="orb" id="orb">
-        <div class="ring"></div>
-        <img class="whale" src="../build/icon.png" alt="" draggable="false" />
-        <div class="badge" id="badge">0</div>
-        <div class="att" id="att"></div>
-      </div>
-    </div>
-    <div class="bubble" id="bubble">
-      <div class="bar"></div>
-      <div class="bhead">
-        <span class="dot" id="dot"></span>
-        <span class="title" id="title">DSH 空闲</span>
-      </div>
-      <div class="rows" id="rows"></div>
-      <div class="more" id="more" hidden></div>
+    <div class="orb" id="orb">
+      <div class="ring"></div>
+      <img class="whale" src="../build/icon.png" alt="" draggable="false" />
+      <div class="badge" id="badge">0</div>
+      <div class="att" id="att"></div>
     </div>
   </div>
 <script>
-  var display = null
   var cfg = null
-  var firstRender = true
-  var lastKind = {}
 
-  var KIND_LABEL = { running: '处理中', approval: '需要审批', question: '需要回答', done: '已完成' }
-  var MODE_TITLE = { idle: 'DSH 空闲', offline: '后端未连接', missing: '未接入状态源' }
-  var FLASH_KINDS = { approval: true, question: true, done: true }
-
-  // hover / auto-collapse state machine
-  var HOVER_IN_MS = 150, HOVER_OUT_MS = 350
-  var localExpanded = false
-  var hoverInside = false
-  var enterT = null, leaveT = null, autoT = null
-
-  function setExpanded(v) {
-    if (localExpanded === v) return
-    localExpanded = v
-    window.overlayAPI.setExpanded(v)
-    document.getElementById('stage').classList.toggle('expanded', v)
-  }
-
-  function bumpAutoTimer() {
-    if (autoT) clearTimeout(autoT)
-    var ms = (cfg && cfg.hideMs) || (display && display.hideMs) || 5000
-    autoT = setTimeout(function () {
-      autoT = null
-      if (!hoverInside) setExpanded(false)
-    }, ms)
-  }
-
-  function onEnter() {
-    hoverInside = true
-    if (leaveT) { clearTimeout(leaveT); leaveT = null }
-    if (autoT) { clearTimeout(autoT); autoT = null }
-    if (!enterT && !localExpanded) {
-      enterT = setTimeout(function () { enterT = null; if (hoverInside) setExpanded(true) }, HOVER_IN_MS)
-    }
-  }
-  function onLeave() {
-    hoverInside = false
-    if (enterT) { clearTimeout(enterT); enterT = null }
-    if (leaveT) clearTimeout(leaveT)
-    leaveT = setTimeout(function () { leaveT = null; if (!hoverInside) setExpanded(false) }, HOVER_OUT_MS)
-  }
-
-  function render() {
-    if (!display) return
-    var stage = document.getElementById('stage')
-    stage.classList.toggle('side-left', display.side === 'left')
-    stage.classList.toggle('side-right', display.side !== 'left')
-    stage.classList.toggle('expanded', !!display.expanded)
-    localExpanded = !!display.expanded
-
+  function render(d) {
     var orb = document.getElementById('orb')
-    orb.className = 'orb' + (display.mode === 'active' ? ' active' : display.mode === 'idle' ? '' : ' ' + display.mode)
-    var badge = document.getElementById('badge')
-    badge.textContent = String(display.runningCount || 0)
-
+    orb.className = 'orb' + (d.mode === 'active' ? ' active' : d.mode === 'idle' ? '' : ' ' + d.mode)
+    document.getElementById('badge').textContent = String(d.runningCount || 0)
     var att = document.getElementById('att')
-    var a = display.attention || {}
+    var a = d.attention || {}
     var want = a.approval ? 'approval' : a.question ? 'question' : a.unread ? 'done' : null
     var attClass = 'att' + (want ? ' show ' + want : '')
     if (att.className !== attClass) {
       att.className = attClass
-      if (want) {
-        att.style.animation = 'none'
-        void att.offsetWidth
-        att.style.animation = ''
-      }
+      if (want) { att.style.animation = 'none'; void att.offsetWidth; att.style.animation = '' }
     }
-
-    var title = document.getElementById('title')
-    var dot = document.getElementById('dot')
-    var rowsEl = document.getElementById('rows')
-    var moreEl = document.getElementById('more')
-    dot.className = 'dot'
-    if (display.mode === 'idle') {
-      title.textContent = MODE_TITLE.idle
-      dot.style.background = '#34d399'
-    } else if (display.mode === 'active') {
-      title.textContent = display.runningCount + ' 个会话运行中'
-      dot.style.background = '#60a5fa'
-      dot.classList.add('pulse')
-    } else {
-      title.textContent = MODE_TITLE[display.mode] || MODE_TITLE.offline
-      dot.style.background = '#64748b'
-    }
-
-    var attentionChanged = false
-    rowsEl.innerHTML = ''
-    var list = display.rows || []
-    if (list.length === 0) {
-      var e = document.createElement('div')
-      e.className = 'empty'
-      e.textContent = display.mode === 'missing' ? '在 cordis 中启用桌面壳插件后显示' : '等待任务开始…'
-      rowsEl.appendChild(e)
-    }
-    for (var i = 0; i < list.length; i++) {
-      var row = makeRow(list[i])
-      if (row.attentionChanged) attentionChanged = true
-      rowsEl.appendChild(row)
-    }
-    moreEl.hidden = !display.more
-    if (display.more) moreEl.textContent = '+ 还有 ' + display.more + ' 个会话…'
-
-    if (!firstRender && attentionChanged && !hoverInside) {
-      setExpanded(true)
-      bumpAutoTimer()
-    }
-    firstRender = false
-  }
-
-  function makeRow(r) {
-    var el = document.createElement('div')
-    el.className = 'row ' + r.kind
-    el.title = r.name
-    var changed = lastKind[r.id] !== r.kind
-    var badge = document.createElement('span')
-    badge.className = 'badge2'
-    badge.textContent = KIND_LABEL[r.kind] || r.kind
-    var name = document.createElement('span')
-    name.className = 'name'
-    name.textContent = r.name
-    el.appendChild(badge)
-    el.appendChild(name)
-    if (r.kind === 'done') {
-      var u = document.createElement('span')
-      u.className = 'unread'
-      el.appendChild(u)
-    }
-    if (!firstRender && FLASH_KINDS[r.kind] && changed) {
-      el.classList.add('flash')
-      el.addEventListener('animationend', function () { el.classList.remove('flash') })
-    }
-    lastKind[r.id] = r.kind
-    el.addEventListener('click', function () { window.overlayAPI.rowClick(r.id) })
-    el.attentionChanged = changed && !!FLASH_KINDS[r.kind]
-    return el
   }
 
   function applyCfg() {
     if (!cfg) return
     document.documentElement.style.setProperty('--alpha', String(cfg.opacity))
-    document.documentElement.style.setProperty('--fs', (cfg.fontSize || 13) + 'px')
     document.documentElement.style.setProperty('--orb', (cfg.orbSize || 56) + 'px')
     document.body.classList.toggle('light', cfg.theme === 'light')
   }
 
-  // Orb drag: deltas MUST be screen coords — clientX shifts when the window
-  // moves under the pointer, which feeds the move back into the delta and
-  // makes the window oscillate (the flicker we are killing).
+  // Drag deltas MUST use screen coords: clientX shifts when the window
+  // moves under the pointer and feeds the move back into the delta.
   ;(function () {
     var orb = document.getElementById('orb')
     orb.addEventListener('pointerdown', function (e) {
+      if (e.button !== 0) return
       e.preventDefault()
       try { orb.setPointerCapture(e.pointerId) } catch (err) {}
       var sx = e.screenX, sy = e.screenY
@@ -360,7 +133,7 @@
       function flush() {
         raf = 0
         if (!dx && !dy) return
-        window.overlayAPI.orbDrag(dx, dy)
+        window.overlayAPI.drag(dx, dy)
         dx = 0; dy = 0
       }
       function move(ev) {
@@ -376,27 +149,27 @@
         if (raf) cancelAnimationFrame(raf)
         if (moved) {
           flush()
-          window.overlayAPI.orbDragEnd()
+          window.overlayAPI.dragEnd()
         } else {
-          setExpanded(false)
-          window.overlayAPI.orbClick()
+          window.overlayAPI.click()
         }
       }
       orb.addEventListener('pointermove', move)
       orb.addEventListener('pointerup', up)
       orb.addEventListener('pointercancel', up)
     })
+    orb.addEventListener('contextmenu', function (e) {
+      e.preventDefault()
+      window.overlayAPI.context(e.screenX, e.screenY)
+    })
   })()
 
   var stage = document.getElementById('stage')
-  stage.addEventListener('mouseenter', onEnter)
-  stage.addEventListener('mouseleave', onLeave)
-  var orbEl = document.getElementById('orb')
-  orbEl.addEventListener('pointerenter', function () { window.overlayAPI.orbHover(true) })
-  orbEl.addEventListener('pointerleave', function () { window.overlayAPI.orbHover(false) })
+  stage.addEventListener('mouseenter', function () { window.overlayAPI.hover(true) })
+  stage.addEventListener('mouseleave', function () { window.overlayAPI.hover(false) })
 
-  window.overlayAPI.onState(function (d) { display = d; render() })
-  window.overlayAPI.onConfig(function (c) { cfg = c; applyCfg(); render() })
+  window.overlayAPI.onState(render)
+  window.overlayAPI.onConfig(function (c) { cfg = c; applyCfg() })
   window.overlayAPI.ready()
 </script>
 </body>

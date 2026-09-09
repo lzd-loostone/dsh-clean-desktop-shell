@@ -1,34 +1,23 @@
 /**
- * dsh-clean-desktop-shell — task orb + bubble overlay (host-of-window half).
+ * dsh-clean-desktop-shell — three-window task overlay.
  *
- * One always-on-top transparent window morphing between two states:
- *
- *   collapsed  a small orb (official whale icon; spinning light ring + count
- *              badge while sessions run; attention dot for approval /
- *              question / unread-done; grey while the backend is stale);
- *   expanded   the orb plus a bubble card listing every active session.
- *
- * Geometry model (anchor-pinned): the ORB is the anchor and never moves for
- * expand/collapse. The window's top-left corner is pinned at the anchor when
- * the bubble opens right, and offset left by the bubble column when it opens
- * left; expansion only ever grows the window DOWNWARD (bottom edge). The
- * window width is constant (orb strip + bubble column) so the horizontal
- * edge never jumps mid-animation; the side flips only at drag-end, and then
- * behind a brief hide/show so no ghost jump is visible.
+ *   orb     strip-sized always-on-top window docked at the nearest screen
+ *           edge (circle center ON the edge line, half hidden). Slides fully
+ *           out on hover; draggable; snaps to the nearest edge on release.
+ *   bubble  opaque session-list card that opens on the inner side of the
+ *           orb. Hover relay (orb ↔ bubble counts as one zone), state-change
+ *           auto-pop with timeout collapse; every click inside collapses.
+ *   menu    custom focusable context menu (blur closes it) with tray-parity
+ *           backend actions; mutually exclusive with the bubble.
  *
  * The state file written by the cordis host half (~/.dsh/desktop-shell-state
  * .json) remains the ONLY input — no port, no token, no DSH transport.
  *
- * Interaction contract (renderer drives, this process owns geometry):
- *   overlay:set-expanded  renderer hover/state-change → grow/shrink bottom
- *   overlay:orb-drag      pointer deltas in SCREEN coords (clientX would
- *                         feed the window move back into the delta and
- *                         oscillate) — anchor persisted on orb-drag-end
- *   overlay:orb-click     raise + focus the main window, collapse
- *   overlay:row-click     jump to that session, clear its unread mark
+ * Geometry invariant: the orb window is the anchor. Bubble/menu are separate
+ * windows positioned from it — expanding anything never moves the orb.
  *
- * config.overlay: { enabled, opacity, theme, fontSize, pos, orbSize,
- *                   bubbleTimeout }
+ * config.overlay: { enabled, opacity, theme, fontSize, side, anchorY,
+ *                   orbSize, bubbleTimeout }
  */
 import { app, BrowserWindow, ipcMain, screen } from 'electron'
 import { existsSync, readFileSync, unwatchFile, watchFile, appendFileSync, statSync, rmSync } from 'node:fs'
@@ -36,9 +25,15 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { loadOverlay, saveOverlay } from './config.js'
+import { getStatus } from './service.js'
+import { startBackend, restartBackend, stopBackend } from './backend-actions.js'
 
 const PRELOAD = fileURLToPath(new URL('./overlay-preload.js', import.meta.url))
 const PAGE = fileURLToPath(new URL('./overlay.html', import.meta.url))
+const BUBBLE_PRELOAD = fileURLToPath(new URL('./bubble-preload.js', import.meta.url))
+const BUBBLE_PAGE = fileURLToPath(new URL('./bubble.html', import.meta.url))
+const MENU_PRELOAD = fileURLToPath(new URL('./menu-preload.js', import.meta.url))
+const MENU_PAGE = fileURLToPath(new URL('./menu.html', import.meta.url))
 const SETTINGS_PRELOAD = fileURLToPath(new URL('./overlay-settings-preload.js', import.meta.url))
 const SETTINGS_PAGE = fileURLToPath(new URL('./overlay-settings.html', import.meta.url))
 
@@ -49,14 +44,27 @@ const ROW_HEIGHT = 44
 const HEADER_HEIGHT = 52
 const PADDING = 18
 const MAX_ROWS = 6
-const ORB_MARGIN = 8 // per side: ring + badge headroom inside the strip
-const BUBBLE_W = 300 // bubble column width (292 card + slack)
-const BUBBLE_GAP = 6 // strip edge → bubble edge
-const BUBBLE_TOP = 8 // bubble top aligns with the circle's top
+const ORB_MARGIN = 8 // ring/badge headroom inside the strip
+const BUBBLE_CARD_W = 292
+const BUB_MARGIN = 10 // transparent ring around the card (rounded corners)
+const BUB_GAP = 6 // circle edge → card edge
+const BUB_TOP_OFFSET = 8 // card top aligns with circle top
 const BUBBLE_H_MAX = 480
 const BUBBLE_H_MIN = 110
+const MENU_W = 208
+const MENU_ITEM_H = 36
+const MENU_SEP_H = 9
+const MENU_PAD = 8
+const HOVER_IN_MS = 150
+const HOVER_OUT_MS = 350
+const UNDOCK_MS = 400
+const SLIDE_MS = 140
+const SNAP_MS = 220
+const BUBBLE_OUT_MS = 115
 
 let overlayWin = null
+let bubbleWin = null
+let menuWin = null
 let settingsWin = null
 let getMainWindow = null
 let watching = false
@@ -65,13 +73,34 @@ let snap = null
 let staleTimer = null
 const prevRunning = new Map()
 const unread = new Map()
-let expanded = false // renderer keeps the authority; this mirrors geometry
-let lastSide = 'left' // bubble placed left of the orb
+const lastKind = {}
+let firstSnap = true
+
+// interaction state (main process is the single authority)
+let side = 'right' // docked edge
+let anchorY = null // orb window top y; null → default near top
+let docked = true // orb currently half-hidden
 let dragging = false
-let orbHovering = false
+let bubbleOpen = false
+let openReason = null // 'hover' | 'auto'
+let menuOpen = false
+let hoverOrb = false
+let hoverBubble = false
+
+let slideTimer = null
+let hoverInT = null
+let closeT = null
+let autoT = null
+let undockT = null
 
 function clamp(v, lo, hi) {
   return Math.min(Math.max(v, lo), hi)
+}
+const easeOutCubic = (t) => 1 - Math.pow(1 - t, 3)
+const easeOutBack = (t) => {
+  const c1 = 1.70158
+  const c3 = c1 + 1
+  return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2)
 }
 
 function stateFile() {
@@ -133,10 +162,7 @@ function buildDisplay() {
   const order = { approval: 0, question: 1, running: 2, done: 3 }
   rows.sort((a, b) => (order[a.kind] - order[b.kind]) || (b.at - a.at))
 
-  if (mode === 'idle' || mode === 'active') {
-    if (runningCount === 0) mode = 'idle'
-    else mode = 'active'
-  }
+  if (mode === 'idle' || mode === 'active') mode = runningCount === 0 ? 'idle' : 'active'
   const attention = {
     approval: rows.some((r) => r.kind === 'approval'),
     question: rows.some((r) => r.kind === 'question'),
@@ -145,88 +171,269 @@ function buildDisplay() {
   return { mode, runningCount, rows, attention, now }
 }
 
-// ---------- geometry (anchor-pinned) ----------
+/** True when a row entered an attention kind since the last tick. */
+function attentionChanged(full) {
+  let changed = false
+  const flash = { approval: true, question: true, done: true }
+  for (const r of full.rows) {
+    if (flash[r.kind] && lastKind[r.id] !== r.kind) changed = true
+    lastKind[r.id] = r.kind
+  }
+  return changed
+}
+
+// ---------- geometry ----------
 
 function orbArea(cfg) {
   return clamp(cfg.orbSize, 40, 96) + ORB_MARGIN * 2
 }
 
-function windowWidth(cfg) {
-  return orbArea(cfg) + BUBBLE_GAP + BUBBLE_W
-}
-
-/** Default anchor: top-right corner (strip top-left). */
-function anchorPos(cfg) {
-  if (cfg.pos) return { x: cfg.pos.x, y: cfg.pos.y }
-  const wa = screen.getPrimaryDisplay().workArea
-  return { x: wa.x + wa.width - orbArea(cfg) - 16, y: wa.y + 16 }
-}
-
-/** The anchor (orb strip top-left) implied by the current window rect. */
-function getAnchor(cfg) {
-  if (!overlayWin || overlayWin.isDestroyed()) return anchorPos(cfg)
-  const b = overlayWin.getBounds()
-  const s = orbArea(cfg)
-  const W = windowWidth(cfg)
-  return { x: b.x + (lastSide === 'left' ? W - s : 0), y: b.y }
-}
-
-/** Target rect for the current state. The orb anchor never moves: x is a
- *  pure function of (anchor, side), y is the anchor y, and expansion only
- *  grows the height downward. Clamping is generous (screen bounds, not work
- *  area) so the bubble may hang over the taskbar rather than shove the orb. */
-function computeBounds(cfg, display) {
-  const s = orbArea(cfg)
-  const a = getAnchor(cfg)
-  const W = windowWidth(cfg)
-  let H = s
-  if (expanded) {
-    const rows = Math.max(1, Math.min(MAX_ROWS, display && display.rows ? display.rows.length : 1))
-    const bubbleH = clamp(HEADER_HEIGHT + PADDING + rows * ROW_HEIGHT + (display && display.more ? 22 : 0) + 8, BUBBLE_H_MIN, BUBBLE_H_MAX)
-    H = Math.max(s, BUBBLE_TOP + bubbleH + 6)
+function waFor() {
+  if (overlayWin && !overlayWin.isDestroyed()) {
+    const b = overlayWin.getBounds()
+    return screen.getDisplayMatching({ x: b.x + Math.round(b.width / 2), y: b.y + Math.round(b.height / 2), width: 1, height: 1 }).workArea
   }
-  const bb = screen.getDisplayNearestPoint({ x: a.x + Math.round(s / 2), y: a.y + Math.round(s / 2) }).bounds
-  const roomRight = bb.x + bb.width - (a.x + s)
-  const roomLeft = a.x - bb.x
-  const side = roomRight + BUBBLE_GAP >= BUBBLE_W || roomLeft < BUBBLE_W ? 'right' : 'left'
-  lastSide = side
-  const x = side === 'right' ? a.x : a.x - (W - s)
-  return {
-    x: clamp(x, bb.x - (W - s) + 60, bb.x + bb.width - 60),
-    y: clamp(a.y, bb.y, Math.max(bb.y, bb.y + bb.height - s - 20)),
-    width: W,
-    height: H,
-    side,
-  }
+  return screen.getPrimaryDisplay().workArea
 }
 
-function sendDisplay() {
+function orbY(cfg) {
+  const wa = waFor()
+  const s = orbArea(cfg)
+  const y = anchorY === null ? wa.y + 16 : anchorY
+  return clamp(Math.round(y), wa.y, Math.max(wa.y, wa.y + wa.height - s))
+}
+
+function orbOutX(cfg) {
+  const wa = waFor()
+  const s = orbArea(cfg)
+  return side === 'right' ? wa.x + wa.width - s - 8 : wa.x + 8
+}
+
+function orbDockX(cfg) {
+  const wa = waFor()
+  const s = orbArea(cfg)
+  // circle center exactly on the edge line → half visible, zero gap
+  return side === 'right' ? wa.x + wa.width - Math.round(s / 2) : wa.x - Math.round(s / 2)
+}
+
+/** Animate the orb window's x between dock and out positions. */
+function slideOrb(targetX, dur, easing, done) {
   if (!overlayWin || overlayWin.isDestroyed()) return
+  if (slideTimer) clearInterval(slideTimer)
+  const cfg = loadOverlay()
+  const y = orbY(cfg)
+  const startX = overlayWin.getBounds().x
+  if (startX === targetX) { overlayWin.setPosition(startX, y); done && done(); return }
+  const t0 = Date.now()
+  slideTimer = setInterval(() => {
+    if (!overlayWin || overlayWin.isDestroyed()) { clearInterval(slideTimer); slideTimer = null; return }
+    let t = (Date.now() - t0) / dur
+    if (t >= 1) t = 1
+    overlayWin.setPosition(Math.round(startX + (targetX - startX) * easing(t)), y)
+    if (t >= 1) { clearInterval(slideTimer); slideTimer = null; done && done() }
+  }, 16)
+}
+
+function slideOut() {
+  if (!overlayWin || overlayWin.isDestroyed() || dragging) return
+  if (!docked && !slideTimer) return
+  docked = false
+  const cfg = loadOverlay()
+  slideOrb(orbOutX(cfg), SLIDE_MS, easeOutCubic)
+}
+
+function scheduleUndock() {
+  if (undockT) clearTimeout(undockT)
+  undockT = setTimeout(() => {
+    undockT = null
+    if (hoverOrb || hoverBubble || bubbleOpen || menuOpen || dragging || docked) return
+    docked = true
+    const cfg = loadOverlay()
+    slideOrb(orbDockX(cfg), SLIDE_MS, easeOutCubic)
+  }, UNDOCK_MS)
+}
+
+function bubbleContentSize(full) {
+  const rows = Math.max(1, Math.min(MAX_ROWS, full.rows.length))
+  const cardH = clamp(HEADER_HEIGHT + PADDING + rows * ROW_HEIGHT + (full.rows.length > MAX_ROWS ? 22 : 0) + 8, BUBBLE_H_MIN, BUBBLE_H_MAX)
+  return { w: BUBBLE_CARD_W + BUB_MARGIN * 2, h: cardH + BUB_MARGIN * 2 }
+}
+
+function bubbleBounds(cfg, full) {
+  const s = orbArea(cfg)
+  const { w, h } = bubbleContentSize(full)
+  const wa = waFor()
+  const outX = orbOutX(cfg)
+  // card right/left edge sits BUB_GAP from the circle edge; the window adds
+  // BUB_MARGIN of transparent padding around the card for the rounded corners.
+  const winX = side === 'right' ? outX + 2 - (BUB_MARGIN + BUBBLE_CARD_W) : outX + s - 2 - BUB_MARGIN
+  const winY = orbY(cfg) + BUB_TOP_OFFSET - BUB_MARGIN
+  return {
+    x: clamp(winX, wa.x, Math.max(wa.x, wa.x + wa.width - w)),
+    y: clamp(winY, wa.y, Math.max(wa.y, wa.y + wa.height - h)),
+    width: w,
+    height: h,
+  }
+}
+
+// ---------- bubble control ----------
+
+function showBubble(reason) {
+  if (!bubbleWin || bubbleWin.isDestroyed() || menuOpen) return
   const cfg = loadOverlay()
   const full = buildDisplay()
-  const display = {
+  if (!bubbleOpen) {
+    bubbleOpen = true
+    openReason = reason
+    slideOut()
+  }
+  const b = bubbleBounds(cfg, full)
+  bubbleWin.setBounds(b)
+  bubbleWin.webContents.send('bubble:state', {
     mode: full.mode,
     runningCount: full.runningCount,
     rows: full.rows.slice(0, MAX_ROWS),
     more: Math.max(0, full.rows.length - MAX_ROWS),
     attention: full.attention,
-    expanded,
-    side: lastSide,
+    side,
     orbSize: cfg.orbSize,
-    hideMs: cfg.bubbleTimeout,
-    now: full.now,
+  })
+  bubbleWin.showInactive()
+  if (reason === 'auto') {
+    if (autoT) clearTimeout(autoT)
+    autoT = setTimeout(() => {
+      autoT = null
+      if (!hoverOrb && !hoverBubble) closeBubble()
+    }, cfg.bubbleTimeout)
   }
-  const want = computeBounds(cfg, display)
-  display.side = want.side // class must match the geometry we just applied
-  if (!dragging) {
-    const b = overlayWin.getBounds()
-    if (b.x !== want.x || b.y !== want.y || b.width !== want.width || b.height !== want.height) {
-      overlayWin.setBounds({ x: want.x, y: want.y, width: want.width, height: want.height })
+}
+
+function closeBubble() {
+  if (autoT) { clearTimeout(autoT); autoT = null }
+  if (closeT) { clearTimeout(closeT); closeT = null }
+  if (!bubbleOpen) { scheduleUndock(); return }
+  bubbleOpen = false
+  openReason = null
+  if (bubbleWin && !bubbleWin.isDestroyed()) {
+    bubbleWin.webContents.send('bubble:hide')
+    setTimeout(() => {
+      if (!bubbleOpen && bubbleWin && !bubbleWin.isDestroyed()) bubbleWin.hide()
+    }, BUBBLE_OUT_MS)
+  }
+  scheduleUndock()
+}
+
+function setHover(which, v) {
+  if (which === 'orb') hoverOrb = v
+  else hoverBubble = v
+  const any = hoverOrb || hoverBubble
+  if (any) {
+    if (undockT) { clearTimeout(undockT); undockT = null }
+    if (closeT) { clearTimeout(closeT); closeT = null }
+    slideOut()
+    if (!bubbleOpen && !menuOpen && !hoverInT) {
+      hoverInT = setTimeout(() => {
+        hoverInT = null
+        if ((hoverOrb || hoverBubble) && !bubbleOpen && !menuOpen) showBubble('hover')
+      }, HOVER_IN_MS)
     }
+  } else {
+    if (hoverInT) { clearTimeout(hoverInT); hoverInT = null }
+    if (bubbleOpen && openReason === 'hover') {
+      closeT = setTimeout(() => {
+        closeT = null
+        if (!(hoverOrb || hoverBubble)) closeBubble()
+      }, HOVER_OUT_MS)
+    }
+    scheduleUndock()
   }
-  applyIgnore()
-  if (!overlayWin.isVisible()) overlayWin.showInactive()
-  overlayWin.webContents.send('overlay:state', display)
+}
+
+// ---------- menu control ----------
+
+function backendOnline() {
+  const st = getStatus()
+  return st.status === 'running' || st.status === 'starting'
+}
+
+function openMenu(cx, cy) {
+  if (!menuWin || menuWin.isDestroyed()) return
+  if (bubbleOpen) closeBubble()
+  menuOpen = true
+  if (undockT) { clearTimeout(undockT); undockT = null }
+  slideOut()
+  const online = backendOnline()
+  const items = online ? 4 : 3
+  const h = MENU_PAD * 2 + items * MENU_ITEM_H + 2 * MENU_SEP_H
+  const wa = waFor()
+  let x = cx + 4
+  let y = cy + 4
+  if (x + MENU_W > wa.x + wa.width) x = cx - MENU_W - 4
+  if (y + h > wa.y + wa.height) y = cy - h - 4
+  x = clamp(x, wa.x, wa.x + wa.width - MENU_W)
+  y = clamp(y, wa.y, wa.y + wa.height - h)
+  menuWin.setBounds({ x: Math.round(x), y: Math.round(y), width: MENU_W, height: h })
+  menuWin.webContents.send('menu:state', { online })
+  menuWin.show()
+  menuWin.focus()
+}
+
+function closeMenu() {
+  if (!menuOpen) return
+  menuOpen = false
+  if (menuWin && !menuWin.isDestroyed() && menuWin.isVisible()) menuWin.hide()
+  if (!hoverOrb && !hoverBubble) scheduleUndock()
+}
+
+// ---------- senders ----------
+
+function sendDisplay() {
+  if (!overlayWin || overlayWin.isDestroyed()) return
+  const cfg = loadOverlay()
+  const full = buildDisplay()
+  const changed = attentionChanged(full)
+  if (firstSnap) firstSnap = false
+  else if (changed && !menuOpen && !bubbleOpen) showBubble('auto')
+  else if (changed && bubbleOpen && openReason === 'auto') showBubble('auto') // reset timer
+  overlayWin.webContents.send('overlay:state', {
+    mode: full.mode,
+    runningCount: full.runningCount,
+    attention: full.attention,
+  })
+  if (bubbleOpen && bubbleWin && !bubbleWin.isDestroyed()) {
+    bubbleWin.setBounds(bubbleBounds(cfg, full))
+    bubbleWin.webContents.send('bubble:state', {
+      mode: full.mode,
+      runningCount: full.runningCount,
+      rows: full.rows.slice(0, MAX_ROWS),
+      more: Math.max(0, full.rows.length - MAX_ROWS),
+      attention: full.attention,
+      side,
+      orbSize: cfg.orbSize,
+    })
+  }
+}
+
+function sendConfig() {
+  const cfg = loadOverlay()
+  if (overlayWin && !overlayWin.isDestroyed()) {
+    overlayWin.webContents.send('overlay:config', { opacity: cfg.opacity, theme: cfg.theme, fontSize: cfg.fontSize, orbSize: cfg.orbSize })
+  }
+  if (bubbleWin && !bubbleWin.isDestroyed()) {
+    bubbleWin.webContents.send('bubble:config', { opacity: cfg.opacity, theme: cfg.theme, fontSize: cfg.fontSize })
+  }
+  if (menuWin && !menuWin.isDestroyed()) {
+    menuWin.webContents.send('menu:config', { theme: cfg.theme, fontSize: cfg.fontSize })
+  }
+  if (settingsWin && !settingsWin.isDestroyed()) settingsWin.webContents.send('overlay:config', cfg)
+}
+
+/** Re-apply the orb rect (after orbSize change / reset / first show). */
+function syncOrbBounds() {
+  if (!overlayWin || overlayWin.isDestroyed() || dragging || slideTimer) return
+  const cfg = loadOverlay()
+  const s = orbArea(cfg)
+  overlayWin.setBounds({ x: docked ? orbDockX(cfg) : orbOutX(cfg), y: orbY(cfg), width: s, height: s })
 }
 
 // ---------- state file watching ----------
@@ -256,17 +463,10 @@ function stopWatching() {
   staleTimer = null
 }
 
-// ---------- window ----------
+// ---------- windows ----------
 
-function createOverlayWindow() {
-  if (overlayWin && !overlayWin.isDestroyed()) return overlayWin
-  const cfg = loadOverlay()
-  const b0 = computeBounds(cfg, { rows: [], more: 0 })
-  overlayWin = new BrowserWindow({
-    width: b0.width,
-    height: b0.height,
-    x: b0.x,
-    y: b0.y,
+function winBase() {
+  return {
     show: false,
     frame: false,
     transparent: true,
@@ -275,50 +475,69 @@ function createOverlayWindow() {
     minimizable: false,
     maximizable: false,
     fullscreenable: false,
-    focusable: false, // never steals the keyboard — it is an OSD, not a dialog
     skipTaskbar: true,
     hasShadow: false,
     alwaysOnTop: true,
     backgroundColor: '#00000000',
-    webPreferences: {
-      preload: PRELOAD,
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-    },
+  }
+}
+
+function createOrbWindow() {
+  if (overlayWin && !overlayWin.isDestroyed()) return overlayWin
+  const cfg = loadOverlay()
+  side = cfg.side
+  anchorY = cfg.anchorY
+  const s = orbArea(cfg)
+  overlayWin = new BrowserWindow({
+    ...winBase(),
+    width: s,
+    height: s,
+    x: orbDockX(cfg),
+    y: orbY(cfg),
+    focusable: false, // never steals the keyboard — it is an OSD, not a dialog
+    webPreferences: { preload: PRELOAD, contextIsolation: true, nodeIntegration: false, sandbox: true },
   })
   overlayWin.setAlwaysOnTop(true, 'screen-saver')
-  applyIgnore()
   overlayWin.loadFile(PAGE)
-  overlayWin.on('closed', () => {
-    overlayWin = null
-  })
+  overlayWin.on('closed', () => { overlayWin = null })
   overlayWin.showInactive()
   return overlayWin
 }
 
-/** The window is always strip+bubble wide; the empty bubble column must not
- *  eat desktop clicks. Collapsed + not hovering the orb → ignore the mouse
- *  (forward:true still delivers hover so expand can trigger). Anything the
- *  user can click (orb hover, expanded bubble, drag) captures normally. */
-function applyIgnore() {
-  if (!overlayWin || overlayWin.isDestroyed()) return
-  const shouldIgnore = !expanded && !orbHovering && !dragging
-  try { overlayWin.setIgnoreMouseEvents(shouldIgnore, { forward: true }) } catch { /* pre-ready */ }
-}
-
-function sendConfig() {
+function createBubbleWindow() {
+  if (bubbleWin && !bubbleWin.isDestroyed()) return bubbleWin
   const cfg = loadOverlay()
-  const payload = { opacity: cfg.opacity, theme: cfg.theme, fontSize: cfg.fontSize, orbSize: cfg.orbSize, hideMs: cfg.bubbleTimeout }
-  if (overlayWin && !overlayWin.isDestroyed()) overlayWin.webContents.send('overlay:config', payload)
-  if (settingsWin && !settingsWin.isDestroyed()) settingsWin.webContents.send('overlay:config', cfg)
+  bubbleWin = new BrowserWindow({
+    ...winBase(),
+    width: BUBBLE_CARD_W + BUB_MARGIN * 2,
+    height: BUBBLE_H_MIN + BUB_MARGIN * 2,
+    x: -BUBBLE_CARD_W * 2,
+    y: -BUBBLE_H_MIN * 2,
+    focusable: false,
+    webPreferences: { preload: BUBBLE_PRELOAD, contextIsolation: true, nodeIntegration: false, sandbox: true },
+  })
+  bubbleWin.setAlwaysOnTop(true, 'screen-saver')
+  bubbleWin.loadFile(BUBBLE_PAGE)
+  bubbleWin.on('closed', () => { bubbleWin = null })
+  return bubbleWin
 }
 
-/** Recompute + apply the rect for the current state (reset, orbSize change). */
-function applyBoundsNow(cfg) {
-  if (!overlayWin || overlayWin.isDestroyed()) return
-  const want = computeBounds(cfg, { rows: [], more: 0 })
-  overlayWin.setBounds({ x: want.x, y: want.y, width: want.width, height: want.height })
+function createMenuWindow() {
+  if (menuWin && !menuWin.isDestroyed()) return menuWin
+  menuWin = new BrowserWindow({
+    ...winBase(),
+    width: MENU_W,
+    height: 200,
+    x: -2000,
+    y: -2000,
+    focusable: true, // it is a menu: it must take focus and close on blur
+    webPreferences: { preload: MENU_PRELOAD, contextIsolation: true, nodeIntegration: false, sandbox: true },
+  })
+  menuWin.setAlwaysOnTop(true, 'screen-saver')
+  menuWin.loadFile(MENU_PAGE)
+  menuWin.on('blur', () => closeMenu())
+  menuWin.on('closed', () => { menuWin = null })
+  return menuWin
 }
 
 // ---------- ipc ----------
@@ -327,34 +546,31 @@ function registerIpc() {
   if (ipcReady) return
   ipcReady = true
 
-  ipcMain.on('overlay:ready', () => {
-    dragging = false
-    sendConfig()
-    sendDisplay()
-  })
-
+  ipcMain.on('overlay:ready', () => { sendConfig(); sendDisplay() })
+  ipcMain.on('bubble:ready', () => { sendConfig(); if (bubbleOpen) sendDisplay() })
+  ipcMain.on('menu:ready', () => { sendConfig() })
   ipcMain.on('shell:trace', (_e, msg) => trace(String(msg).slice(0, 300)))
 
-  ipcMain.on('overlay:set-expanded', (_e, v) => {
-    expanded = !!v
-    sendDisplay() // grows/shrinks the bottom edge only — orb never moves
-  })
+  ipcMain.on('overlay:orb-hover', (_e, v) => setHover('orb', !!v))
+  ipcMain.on('bubble:hover', (_e, v) => setHover('bubble', !!v))
 
   ipcMain.on('overlay:orb-drag', (_e, d) => {
     if (!overlayWin || overlayWin.isDestroyed()) return
     const dx = d && Number.isFinite(d.dx) ? d.dx : 0
     const dy = d && Number.isFinite(d.dy) ? d.dy : 0
     if (!dx && !dy) return
-    dragging = true
+    if (!dragging) {
+      dragging = true
+      if (slideTimer) { clearInterval(slideTimer); slideTimer = null }
+      if (bubbleOpen) closeBubble()
+    }
     const cfg = loadOverlay()
     const s = orbArea(cfg)
     const b = overlayWin.getBounds()
-    const bb = screen.getDisplayNearestPoint({ x: b.x, y: b.y }).bounds
-    const leftLimit = bb.x - (b.width - s) + 60 // keep 60px of the strip visible
-    const rightLimit = bb.x + bb.width - 60
+    const bb = screen.getDisplayNearestPoint({ x: b.x + Math.round(s / 2), y: b.y + Math.round(s / 2) }).bounds
     overlayWin.setPosition(
-      clamp(b.x + dx, leftLimit, rightLimit),
-      clamp(b.y + dy, bb.y, Math.max(bb.y, bb.y + bb.height - s - 20)),
+      clamp(b.x + dx, bb.x - s + 60, bb.x + bb.width - 60),
+      clamp(b.y + dy, bb.y, Math.max(bb.y, bb.y + bb.height - s)),
     )
   })
 
@@ -362,41 +578,36 @@ function registerIpc() {
     if (!overlayWin || overlayWin.isDestroyed()) return
     dragging = false
     const cfg = loadOverlay()
-    const a = getAnchor(cfg)
-    saveOverlay({ pos: { x: a.x, y: a.y } })
-    const prevSide = lastSide
-    const want = computeBounds(cfg, { rows: [], more: 0 })
-    if (want.side !== prevSide) {
-      // The strip moves to the other window edge — hide while the rect and
-      // the renderer class swap so no ghost jump is visible.
-      overlayWin.hide()
-      overlayWin.setBounds({ x: want.x, y: want.y, width: want.width, height: want.height })
-      sendDisplay()
-      setTimeout(() => {
-        if (overlayWin && !overlayWin.isDestroyed()) overlayWin.showInactive()
-      }, 40)
-      return
-    }
-    sendDisplay()
-  })
-
-  ipcMain.on('overlay:orb-hover', (_e, v) => {
-    orbHovering = !!v
-    applyIgnore()
+    const s = orbArea(cfg)
+    const b = overlayWin.getBounds()
+    const bb = screen.getDisplayNearestPoint({ x: b.x + Math.round(s / 2), y: b.y + Math.round(s / 2) }).bounds
+    side = b.x + Math.round(s / 2) < bb.x + Math.round(bb.width / 2) ? 'left' : 'right'
+    anchorY = b.y
+    saveOverlay({ side, anchorY })
+    docked = true
+    slideOrb(orbDockX(cfg), SNAP_MS, easeOutBack)
   })
 
   ipcMain.on('overlay:orb-click', () => {
     trace('orb-click')
-    expanded = false
+    if (bubbleOpen) closeBubble()
     focusMain()
-    sendDisplay()
   })
 
-  ipcMain.on('overlay:row-click', (_e, id) => {
+  ipcMain.on('overlay:orb-context', (_e, p) => {
+    if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) openMenu(Math.round(p.x), Math.round(p.y))
+  })
+
+  ipcMain.on('bubble:row', (_e, id) => {
     trace('row-click ' + JSON.stringify(id))
     if (typeof id === 'string' && unread.has(id)) unread.delete(id)
+    closeBubble()
     focusMain(id)
-    sendDisplay()
+  })
+
+  ipcMain.on('bubble:blank', () => {
+    closeBubble()
+    focusMain()
   })
 
   ipcMain.handle('overlay:settings-get', () => loadOverlay())
@@ -407,16 +618,25 @@ function registerIpc() {
   })
 
   ipcMain.on('overlay:settings-reset-pos', () => {
-    saveOverlay({ pos: null })
-    expanded = false
-    if (overlayWin && !overlayWin.isDestroyed()) applyBoundsNow(loadOverlay())
-    sendConfig()
-    sendDisplay()
+    resetOverlayPosition()
   })
 
   ipcMain.on('overlay:settings-close', () => {
     if (settingsWin && !settingsWin.isDestroyed()) settingsWin.close()
   })
+
+  ipcMain.on('menu:action', (_e, id) => {
+    closeMenu()
+    if (id === 'refresh') {
+      const main = getMainWindow && getMainWindow()
+      if (main && !main.isDestroyed()) main.webContents.reload()
+    } else if (id === 'start') startBackend()
+    else if (id === 'restart') restartBackend()
+    else if (id === 'stop') stopBackend()
+    else if (id === 'settings') openOverlaySettings()
+  })
+
+  ipcMain.on('menu:close', () => closeMenu())
 }
 
 /** Raise and focus the main window; optionally route to a session. */
@@ -444,17 +664,27 @@ export function initOverlay({ getMainWindow: provider }) {
 /** Reconcile windows/watchers with the persisted config. */
 export function applyOverlayConfig() {
   const cfg = loadOverlay()
+  side = cfg.side
+  anchorY = cfg.anchorY
   if (!cfg.enabled) {
     stopWatching()
-    if (overlayWin && !overlayWin.isDestroyed()) overlayWin.close()
+    closeBubble()
+    closeMenu()
+    for (const w of [bubbleWin, menuWin, overlayWin]) {
+      if (w && !w.isDestroyed()) w.close()
+    }
     overlayWin = null
-    expanded = false
+    bubbleWin = null
+    menuWin = null
     return
   }
-  createOverlayWindow()
+  createOrbWindow()
+  createBubbleWindow()
+  createMenuWindow()
   sendConfig()
   startWatching()
-  sendDisplay() // picks up orbSize changes (window width depends on it)
+  syncOrbBounds()
+  sendDisplay()
 }
 
 /** Open (or focus) the small settings window from the tray. */
@@ -484,23 +714,31 @@ export function openOverlaySettings() {
   })
   settingsWin.loadFile(SETTINGS_PAGE)
   settingsWin.once('ready-to-show', () => settingsWin.show())
-  settingsWin.on('closed', () => {
-    settingsWin = null
-  })
+  settingsWin.on('closed', () => { settingsWin = null })
   return settingsWin
 }
 
-/** Reset the overlay position to the default corner (tray action). */
+/** Reset the overlay position to the default corner (tray/settings action). */
 export function resetOverlayPosition() {
-  expanded = false
-  saveOverlay({ pos: null })
-  if (overlayWin && !overlayWin.isDestroyed()) applyBoundsNow(loadOverlay())
+  closeBubble()
+  closeMenu()
+  side = 'right'
+  anchorY = null
+  docked = true
+  saveOverlay({ side: 'right', anchorY: null })
+  if (overlayWin && !overlayWin.isDestroyed()) {
+    const cfg = loadOverlay()
+    const s = orbArea(cfg)
+    overlayWin.setBounds({ x: orbDockX(cfg), y: orbY(cfg), width: s, height: s })
+  }
   sendDisplay()
 }
 
 /** Release watchers (called on app quit). */
 export function disposeOverlay() {
   stopWatching()
+  if (slideTimer) clearInterval(slideTimer)
+  for (const t of [hoverInT, closeT, autoT, undockT]) if (t) clearTimeout(t)
   unread.clear()
   prevRunning.clear()
 }
