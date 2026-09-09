@@ -395,7 +395,7 @@ function sendDisplay() {
   if (firstSnap) firstSnap = false
   else if (changed && !menuOpen && !bubbleOpen) showBubble('auto')
   else if (changed && bubbleOpen && openReason === 'auto') showBubble('auto') // reset timer
-  overlayWin.webContents.send('overlay:state', {
+  overlayWin.webContents.send('overlay:state', { side,
     mode: full.mode,
     runningCount: full.runningCount,
     attention: full.attention,
@@ -621,6 +621,13 @@ function registerIpc() {
     resetOverlayPosition()
   })
 
+  // The page measures its own content and reports the needed height, so
+  // the frameless card never shows dead space.
+  ipcMain.on('overlay:settings-size', (_e, h) => {
+    if (!settingsWin || settingsWin.isDestroyed() || !Number.isFinite(h)) return
+    settingsWin.setContentSize(344, clamp(Math.round(h), 360, 720))
+  })
+
   ipcMain.on('overlay:settings-close', () => {
     if (settingsWin && !settingsWin.isDestroyed()) settingsWin.close()
   })
@@ -695,15 +702,19 @@ export function openOverlaySettings() {
     return settingsWin
   }
   settingsWin = new BrowserWindow({
-    width: 360,
-    height: 560,
+    width: 344,
+    height: 480,
     show: false,
     resizable: false,
     minimizable: false,
     maximizable: false,
     fullscreenable: false,
+    frame: false,
+    transparent: true,
+    skipTaskbar: true,
+    hasShadow: false,
     title: '悬浮窗设置',
-    backgroundColor: '#10131A',
+    backgroundColor: '#00000000',
     autoHideMenuBar: true,
     webPreferences: {
       preload: SETTINGS_PRELOAD,

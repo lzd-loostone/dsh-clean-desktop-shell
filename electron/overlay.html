@@ -68,6 +68,8 @@
     pointer-events: none;
   }
   .orb.active .badge { display: block; }
+  .stage.edge-right .badge { right: auto; left: -4px; }
+  .stage.edge-right .att { right: auto; left: 0; }
   .att {
     position: absolute; bottom: 0; right: 0;
     width: 12px; height: 12px; border-radius: 50%;
@@ -101,6 +103,7 @@
 
   function render(d) {
     var orb = document.getElementById('orb')
+    document.getElementById('stage').classList.toggle('edge-right', d.side === 'right')
     orb.className = 'orb' + (d.mode === 'active' ? ' active' : d.mode === 'idle' ? '' : ' ' + d.mode)
     document.getElementById('badge').textContent = String(d.runningCount || 0)
     var att = document.getElementById('att')
