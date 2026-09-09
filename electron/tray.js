@@ -102,7 +102,7 @@ export function refreshTrayMenu() {
         },
         { label: '设置…', click: () => openOverlaySettings() },
         {
-          label: '重置位置和宽度',
+          label: '重置位置',
           click: () => {
             resetOverlayPosition()
           },

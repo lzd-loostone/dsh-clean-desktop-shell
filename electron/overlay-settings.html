@@ -9,7 +9,7 @@
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { background: var(--bg); color: var(--text); font-family: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif; font-size: 13px; user-select: none; padding: 16px; }
   h1 { font-size: 15px; font-weight: 600; margin-bottom: 4px; }
-  .sub { color: var(--dim); font-size: 12px; margin-bottom: 16px; }
+  .sub { color: var(--dim); font-size: 12px; margin-bottom: 14px; line-height: 1.5; }
   .group { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; }
   .item { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 0; }
   .item + .item { border-top: 1px solid var(--line); }
@@ -25,19 +25,19 @@
   .seg { display: flex; gap: 4px; background: #202631; border-radius: 8px; padding: 3px; }
   .seg button { border: 0; background: transparent; color: var(--dim); font: inherit; font-size: 12px; padding: 4px 12px; border-radius: 6px; cursor: pointer; }
   .seg button.on { background: var(--acc); color: #fff; }
-  .btns { display: flex; gap: 8px; margin-top: 14px; }
+  .btns { display: flex; gap: 8px; margin-top: 12px; }
   .btns button { flex: 1; border: 1px solid var(--line); background: var(--panel); color: var(--text); font: inherit; padding: 8px 0; border-radius: 8px; cursor: pointer; }
   .btns button:hover { border-color: var(--acc); }
   .btns button.primary { background: var(--acc); border-color: var(--acc); color: #fff; }
 </style>
 </head>
 <body>
-  <h1>任务悬浮窗设置</h1>
-  <div class="sub">改动即时生效；拖头部移动位置，拖右边缘调宽度（双击边缘还原），高度随任务数自动伸缩。</div>
+  <h1>任务悬浮球设置</h1>
+  <div class="sub">改动即时生效。拖动圆圈移动位置，点击圆圈唤起主窗口，悬停或状态变化时展开气泡。</div>
 
   <div class="group">
     <div class="item">
-      <span class="label">显示悬浮窗</span>
+      <span class="label">显示悬浮球</span>
       <label class="switch"><input type="checkbox" id="enabled" /><span class="slider"></span></label>
     </div>
     <div class="item">
@@ -51,6 +51,11 @@
 
   <div class="group">
     <div class="item">
+      <span class="label">圆圈大小</span>
+      <input type="range" id="orbSize" min="40" max="96" step="2" />
+      <span class="value" id="orbSize-v"></span>
+    </div>
+    <div class="item">
       <span class="label">背景透明度</span>
       <input type="range" id="opacity" min="20" max="100" step="1" />
       <span class="value" id="opacity-v"></span>
@@ -60,15 +65,20 @@
       <input type="range" id="fontSize" min="11" max="18" step="1" />
       <span class="value" id="fontSize-v"></span>
     </div>
+    <div class="item">
+      <span class="label">气泡自动收起</span>
+      <input type="range" id="hideSec" min="2" max="15" step="1" />
+      <span class="value" id="hideSec-v"></span>
+    </div>
   </div>
 
   <div class="btns">
-    <button id="reset">重置位置/宽度</button>
+    <button id="reset">重置位置</button>
     <button id="close" class="primary">完成</button>
   </div>
 
 <script>
-  var cur = { theme: 'dark', opacity: 0.86, fontSize: 13, enabled: true }
+  var cur = { theme: 'dark', opacity: 0.86, fontSize: 13, enabled: true, orbSize: 56, bubbleTimeout: 5000 }
   var t = null
   function push(patch) {
     cur = Object.assign(cur, patch)
@@ -82,12 +92,18 @@
     document.getElementById('opacity-v').textContent = Math.round(cur.opacity * 100) + '%'
     document.getElementById('fontSize').value = cur.fontSize
     document.getElementById('fontSize-v').textContent = cur.fontSize + 'px'
+    document.getElementById('orbSize').value = cur.orbSize
+    document.getElementById('orbSize-v').textContent = cur.orbSize + 'px'
+    document.getElementById('hideSec').value = Math.round((cur.bubbleTimeout || 5000) / 1000)
+    document.getElementById('hideSec-v').textContent = Math.round((cur.bubbleTimeout || 5000) / 1000) + 's'
     var btns = document.querySelectorAll('#theme button')
     for (var i = 0; i < btns.length; i++) btns[i].classList.toggle('on', btns[i].dataset.v === cur.theme)
   }
   document.getElementById('enabled').addEventListener('change', function (e) { push({ enabled: e.target.checked }) })
   document.getElementById('opacity').addEventListener('input', function (e) { push({ opacity: Number(e.target.value) / 100 }) })
   document.getElementById('fontSize').addEventListener('input', function (e) { push({ fontSize: Number(e.target.value) }) })
+  document.getElementById('orbSize').addEventListener('input', function (e) { push({ orbSize: Number(e.target.value) }) })
+  document.getElementById('hideSec').addEventListener('input', function (e) { push({ bubbleTimeout: Number(e.target.value) * 1000 }) })
   document.getElementById('theme').addEventListener('click', function (e) {
     var b = e.target.closest('button')
     if (b) push({ theme: b.dataset.v })

@@ -1,18 +1,29 @@
 /**
- * dsh-clean-desktop-shell — task overlay window.
+ * dsh-clean-desktop-shell — task orb + bubble overlay (host-of-window half).
  *
- * A GPU-monitor style always-on-top card fed by the host half's state file
- * (~/.dsh/desktop-shell-state.json). The file is the ONLY input: no port,
- * no token, no DSH-internal transport. It shows
+ * One always-on-top transparent window morphing between two states:
  *
- *   idle      「DSH 空闲」 when nothing runs;
- *   active    「N 个会话运行中」 + one row per session (名字 + 状态);
- *   approval  需要审批 / 需要回答 highlight while a decision chain is pending;
- *   done      finished tasks flip to unread 「已完成」 until clicked.
+ *   collapsed  a small orb (whale icon; spinning light ring + count badge
+ *              while sessions run; attention dot for approval / question /
+ *              unread-done; grey while the backend is stale/missing);
+ *   expanded   the orb plus a bubble card listing every active session —
+ *              the same rows, flash cues and click-to-jump semantics the
+ *              old full-card overlay had.
  *
- * Clicking a row focuses (and shows) the main window and clears that row's
- * unread mark. Position is remembered after a drag; opacity/theme/font come
- * from config.overlay (tray 「任务悬浮窗」 submenu).
+ * The state file written by the cordis host half (~/.dsh/desktop-shell-state
+ * .json) remains the ONLY input — no port, no token, no DSH transport.
+ *
+ * Interaction contract (renderer drives, this process owns geometry):
+ *   overlay:set-expanded  renderer hover/state-change → grow or shrink the
+ *                         window around the orb anchor
+ *   overlay:orb-drag      manual orb dragging (pointer deltas; the window is
+ *                         focusable:false so OS drag regions cannot coexist
+ *                         with clicks) — anchor persisted on orb-drag-end
+ *   overlay:orb-click     raise + focus the main window, collapse
+ *   overlay:row-click     jump to that session, clear its unread mark
+ *
+ * config.overlay: { enabled, opacity, theme, fontSize, pos, orbSize,
+ *                   bubbleTimeout }
  */
 import { app, BrowserWindow, ipcMain, screen } from 'electron'
 import { existsSync, readFileSync, unwatchFile, watchFile, appendFileSync, statSync, rmSync } from 'node:fs'
@@ -27,18 +38,29 @@ const SETTINGS_PRELOAD = fileURLToPath(new URL('./overlay-settings-preload.js', 
 const SETTINGS_PAGE = fileURLToPath(new URL('./overlay-settings.html', import.meta.url))
 
 // A fresh snapshot is rewritten by the backend at least every 5s; past this
-// window the writer is gone (backend stopped/crashed) → show offline.
+// window the writer is gone (backend stopped/crashed) → the orb goes grey.
 const STALE_MS = 12000
 const ROW_HEIGHT = 44
 const HEADER_HEIGHT = 52
 const PADDING = 18
 const MAX_ROWS = 6
-const WIDTH = 280 // default width; overlay.width overrides after edge dragging
-const MIN_W = 220
-const MAX_W = 640
-const MIN_H = 96
-const MAX_H = 720
-let resizeActive = false // edge-drag loop owns the width while true
+const ORB_MARGIN = 8 // per side: ring glow + badge overhead headroom
+const BUBBLE_W = 300 // bubble column width in the expanded window
+const BUBBLE_H_MAX = 480
+const BUBBLE_H_MIN = 110
+
+let overlayWin = null
+let settingsWin = null
+let getMainWindow = null
+let watching = false
+let ipcReady = false
+let snap = null
+let staleTimer = null
+const prevRunning = new Map()
+const unread = new Map()
+let expanded = false // renderer keeps the authority; this mirrors geometry
+let lastSide = 'left' // bubble placed left of the orb
+let dragging = false
 
 function clamp(v, lo, hi) {
   return Math.min(Math.max(v, lo), hi)
@@ -63,17 +85,6 @@ function trace(msg) {
   } catch { /* tracing must never break the overlay */ }
 }
 
-let overlayWin = null
-let settingsWin = null
-let getMainWindow = null
-let watching = false
-let ipcReady = false
-let snap = null // last parsed state file, or null when absent/unparsable
-let staleTimer = null
-const prevRunning = new Map() // sessionId → running (transition detector)
-const unread = new Map() // sessionId → { name, at } — done-until-clicked
-let suppressMovedSave = false
-
 // ---------- display derivation ----------
 
 function applySnapshot(next) {
@@ -87,9 +98,6 @@ function applySnapshot(next) {
     if (s.running) prevRunning.set(s.id, true)
     else prevRunning.delete(s.id)
   }
-  // Rows gone from the store still surface their completion via unread;
-  // drop unread once the session itself disappears long-term? Keep it —
-  // clearing only happens on click, matching 「点开后消失」.
   snap = next
   sendDisplay()
 }
@@ -109,7 +117,7 @@ function buildDisplay() {
     else if (s.questions > 0) rows.push({ id: s.id, name: s.name, kind: 'question', at: s.lastChangeAt })
     else if (s.running) rows.push({ id: s.id, name: s.name, kind: 'running', at: s.startedAt || s.lastChangeAt })
   }
-  const runningCount = rows.filter((r) => r.kind === 'running' || r.kind === 'approval' || r.kind === 'question').length
+  const runningCount = rows.length
   for (const [id, u] of unread) {
     if (seen.has(id) && list.find((s) => s.id === id && (s.running || s.approvals > 0 || s.questions > 0))) continue
     rows.push({ id, name: u.name, kind: 'done', at: u.at })
@@ -118,39 +126,101 @@ function buildDisplay() {
   rows.sort((a, b) => order[a.kind] - order[b.kind] || b.at - a.at)
 
   if (mode === 'idle' || mode === 'active') {
-    if (rows.length === 0) mode = 'idle'
-    else if (runningCount > 0) mode = 'active'
-    // Rows left are purely 'done' (nothing running) → keep the idle count
-    // honest but still show the unread completions.
+    if (runningCount === 0) mode = 'idle'
+    else mode = 'active'
   }
-  return { mode, runningCount, rows, now }
+  const attention = {
+    approval: rows.some((r) => r.kind === 'approval'),
+    question: rows.some((r) => r.kind === 'question'),
+    unread: rows.some((r) => r.kind === 'done'),
+  }
+  return { mode, runningCount, rows, attention, now }
+}
+
+// ---------- geometry ----------
+
+function orbArea(cfg) {
+  return clamp(cfg.orbSize, 40, 96) + ORB_MARGIN * 2
+}
+
+function anchorPos(cfg) {
+  if (cfg.pos) return { x: cfg.pos.x, y: cfg.pos.y }
+  const wa = screen.getPrimaryDisplay().workArea
+  return { x: wa.x + wa.width - orbArea(cfg) - 16, y: wa.y + 16 }
+}
+
+function clampToVisuals(x, y, cfg) {
+  const d = screen.getDisplayNearestPoint({ x, y })
+  const wa = d.workArea
+  const s = orbArea(cfg)
+  return {
+    x: Math.min(Math.max(x, wa.x - s + 60), wa.x + wa.width - 60),
+    y: Math.min(Math.max(y, wa.y), wa.y + wa.height - 60),
+  }
+}
+
+/** Bounds of the collapsed orb window at its anchor. */
+function collapsedBounds(cfg) {
+  const p = anchorPos(cfg)
+  const s = orbArea(cfg)
+  return { x: p.x, y: p.y, width: s, height: s }
+}
+
+/** Current orb anchor (window top-left when collapsed; derived from the
+ *  expanded rect otherwise). */
+function getAnchor(cfg) {
+  if (!overlayWin || overlayWin.isDestroyed()) return anchorPos(cfg)
+  const b = overlayWin.getBounds()
+  if (!expanded) return { x: b.x, y: b.y }
+  const s = orbArea(cfg)
+  const x = b.x + (lastSide === 'left' ? BUBBLE_W : 0)
+  const y = b.y + Math.round((b.height - s) / 2)
+  return { x, y }
+}
+
+function computeBounds(cfg, display) {
+  const s = orbArea(cfg)
+  if (!expanded) return { ...collapsedBounds(cfg), side: lastSide }
+  const a = getAnchor(cfg)
+  const rows = Math.max(1, Math.min(MAX_ROWS, display.rows.length))
+  const bubbleH = clamp(HEADER_HEIGHT + PADDING + rows * ROW_HEIGHT + (display.more ? 22 : 0) + 8, BUBBLE_H_MIN, BUBBLE_H_MAX)
+  const H = Math.max(s, bubbleH)
+  const wa = screen.getDisplayNearestPoint({ x: a.x + Math.round(s / 2), y: a.y + Math.round(s / 2) }).workArea
+  const roomRight = wa.x + wa.width - (a.x + s)
+  const roomLeft = a.x - wa.x
+  const side = roomRight + 16 >= BUBBLE_W || roomLeft < BUBBLE_W ? 'right' : 'left'
+  const x = side === 'right' ? a.x : a.x - BUBBLE_W
+  const y = a.y - Math.round((H - s) / 2)
+  lastSide = side
+  return {
+    x: clamp(x, wa.x, wa.x + wa.width - (s + BUBBLE_W)),
+    y: clamp(y, wa.y, Math.max(wa.y, wa.y + wa.height - H)),
+    width: s + BUBBLE_W,
+    height: H,
+    side,
+  }
 }
 
 function sendDisplay() {
   if (!overlayWin || overlayWin.isDestroyed()) return
   const cfg = loadOverlay()
-  const width = cfg.width ? clamp(cfg.width, MIN_W, MAX_W) : WIDTH
   const full = buildDisplay()
   const display = {
     mode: full.mode,
     runningCount: full.runningCount,
     rows: full.rows.slice(0, MAX_ROWS),
     more: Math.max(0, full.rows.length - MAX_ROWS),
+    attention: full.attention,
+    expanded,
+    side: lastSide,
+    orbSize: cfg.orbSize,
+    hideMs: cfg.bubbleTimeout,
     now: full.now,
   }
-  // Height always adapts to the row count. Mid-drag the renderer's edge
-  // loop owns the width — applying the (not yet persisted) config width
-  // here is what made the card flicker.
-  if (!resizeActive) {
-    const b = overlayWin.getBounds()
-    const contentH = HEADER_HEIGHT + PADDING + Math.max(1, display.rows.length) * ROW_HEIGHT + (display.more ? 22 : 0)
-    const wa = screen.getDisplayNearestPoint({ x: b.x, y: b.y }).workArea
-    const height = clamp(contentH, MIN_H, Math.min(MAX_H, wa.height))
-    if (b.width !== width || b.height !== height) {
-      suppressMovedSave = true
-      overlayWin.setBounds({ x: b.x, y: b.y, width, height })
-      suppressMovedSave = false
-    }
+  const want = computeBounds(cfg, display)
+  const b = overlayWin.getBounds()
+  if (!dragging && (b.x !== want.x || b.y !== want.y || b.width !== want.width || b.height !== want.height)) {
+    overlayWin.setBounds({ x: want.x, y: want.y, width: want.width, height: want.height })
   }
   if (!overlayWin.isVisible()) overlayWin.showInactive()
   overlayWin.webContents.send('overlay:state', display)
@@ -176,7 +246,7 @@ function startWatching() {
 }
 
 function stopWatching() {
-  if (!watching) return
+  if (watching) return
   watching = false
   unwatchFile(stateFile())
   if (staleTimer) clearInterval(staleTimer)
@@ -185,25 +255,19 @@ function stopWatching() {
 
 // ---------- window ----------
 
-function defaultPosition() {
-  const wa = screen.getPrimaryDisplay().workArea
-  return { x: wa.x + wa.width - WIDTH - 16, y: wa.y + 16 }
-}
-
-function clampToVisuals(x, y) {
-  const d = screen.getDisplayNearestPoint({ x, y })
-  const wa = d.workArea
-  return {
-    x: Math.min(Math.max(x, wa.x - WIDTH + 60), wa.x + wa.width - 60),
-    y: Math.min(Math.max(y, wa.y), wa.y + wa.height - 60),
-  }
-}
-
 function createOverlayWindow() {
   if (overlayWin && !overlayWin.isDestroyed()) return overlayWin
+  const cfg = loadOverlay()
+  const start = clampToVisuals(
+    cfg.pos ? cfg.pos.x : collapsedBounds(cfg).x,
+    cfg.pos ? cfg.pos.y : collapsedBounds(cfg).y,
+    cfg,
+  )
   overlayWin = new BrowserWindow({
-    width: WIDTH,
-    height: 120,
+    width: orbArea(cfg),
+    height: orbArea(cfg),
+    x: start.x,
+    y: start.y,
     show: false,
     frame: false,
     transparent: true,
@@ -226,23 +290,8 @@ function createOverlayWindow() {
   })
   overlayWin.setAlwaysOnTop(true, 'screen-saver')
   overlayWin.loadFile(PAGE)
-  overlayWin.on('moved', () => {
-    if (suppressMovedSave) return
-    const [x, y] = overlayWin.getPosition()
-    setTimeout(() => {
-      saveOverlay({ pos: { x, y } })
-    }, 500)
-  })
   overlayWin.on('closed', () => {
     overlayWin = null
-  })
-  const cfg = loadOverlay()
-  const pos = clampToVisuals(cfg.pos ? cfg.pos.x : defaultPosition().x, cfg.pos ? cfg.pos.y : defaultPosition().y)
-  overlayWin.setBounds({
-    x: pos.x,
-    y: pos.y,
-    width: cfg.width ? clamp(cfg.width, MIN_W, MAX_W) : WIDTH,
-    height: 120, // sendDisplay adapts the height immediately after
   })
   overlayWin.showInactive()
   return overlayWin
@@ -250,7 +299,7 @@ function createOverlayWindow() {
 
 function sendConfig() {
   const cfg = loadOverlay()
-  const payload = { opacity: cfg.opacity, theme: cfg.theme, fontSize: cfg.fontSize }
+  const payload = { opacity: cfg.opacity, theme: cfg.theme, fontSize: cfg.fontSize, orbSize: cfg.orbSize, hideMs: cfg.bubbleTimeout }
   if (overlayWin && !overlayWin.isDestroyed()) overlayWin.webContents.send('overlay:config', payload)
   if (settingsWin && !settingsWin.isDestroyed()) settingsWin.webContents.send('overlay:config', cfg)
 }
@@ -262,55 +311,53 @@ function registerIpc() {
   ipcReady = true
 
   ipcMain.on('overlay:ready', () => {
-    resizeActive = false // a reloaded page is not mid-drag
+    dragging = false
     sendConfig()
     sendDisplay()
   })
 
   ipcMain.on('shell:trace', (_e, msg) => trace(String(msg).slice(0, 300)))
 
+  ipcMain.on('overlay:set-expanded', (_e, v) => {
+    expanded = !!v
+    sendDisplay()
+  })
+
+  ipcMain.on('overlay:orb-drag', (_e, d) => {
+    if (!overlayWin || overlayWin.isDestroyed()) return
+    const dx = d && Number.isFinite(d.dx) ? d.dx : 0
+    const dy = d && Number.isFinite(d.dy) ? d.dy : 0
+    if (!dx && !dy) return
+    dragging = true
+    const b = overlayWin.getBounds()
+    const wa = screen.getDisplayNearestPoint({ x: b.x, y: b.y }).workArea
+    overlayWin.setPosition(
+      clamp(b.x + dx, wa.x - 40, wa.x + wa.width - 40),
+      clamp(b.y + dy, wa.y, wa.y + wa.height - 40),
+    )
+  })
+
+  ipcMain.on('overlay:orb-drag-end', () => {
+    if (!overlayWin || overlayWin.isDestroyed()) return
+    dragging = false
+    const cfg = loadOverlay()
+    const a = getAnchor(cfg)
+    const p = clampToVisuals(a.x, a.y, cfg)
+    saveOverlay({ pos: { x: p.x, y: p.y } })
+    sendDisplay()
+  })
+
+  ipcMain.on('overlay:orb-click', () => {
+    trace('orb-click')
+    expanded = false
+    focusMain()
+    sendDisplay()
+  })
+
   ipcMain.on('overlay:row-click', (_e, id) => {
     trace('row-click ' + JSON.stringify(id))
     if (typeof id === 'string' && unread.has(id)) unread.delete(id)
-    const main = getMainWindow && getMainWindow()
-    if (main && !main.isDestroyed()) {
-      if (main.isMinimized()) main.restore()
-      main.show()
-      main.focus()
-      if (typeof id === 'string') {
-        // Hand the session id to the page; the client plugin routes it to
-        // the documented ctx.sessions.open() command (see src/client.js).
-        try { main.webContents.send('shell:goto-session', id); trace('sent goto ' + id) } catch (err) { trace('send failed: ' + (err && err.message)) }
-      }
-    }
-    sendDisplay()
-  })
-
-  // Right-edge drag resizing: width only (220–640), height stays content
-  // adaptive. Deltas coalesce in the renderer; the final width persists.
-  ipcMain.on('overlay:resize', (_e, d) => {
-    if (!overlayWin || overlayWin.isDestroyed()) return
-    const dw = d && Number.isFinite(d.dw) ? d.dw : 0
-    if (!dw) return
-    resizeActive = true
-    const b = overlayWin.getBounds()
-    overlayWin.setBounds({
-      x: b.x,
-      y: b.y,
-      width: clamp(b.width + dw, MIN_W, MAX_W),
-      height: b.height,
-    })
-  })
-
-  ipcMain.on('overlay:reset-size', () => {
-    saveOverlay({ width: null })
-    sendDisplay()
-  })
-
-  ipcMain.on('overlay:resize-end', () => {
-    resizeActive = false
-    if (!overlayWin || overlayWin.isDestroyed()) return
-    saveOverlay({ width: overlayWin.getBounds().width })
+    focusMain(id)
     sendDisplay()
   })
 
@@ -322,12 +369,13 @@ function registerIpc() {
   })
 
   ipcMain.on('overlay:settings-reset-pos', () => {
-    saveOverlay({ pos: null, width: null })
+    saveOverlay({ pos: null })
+    expanded = false
     if (overlayWin && !overlayWin.isDestroyed()) {
-      const p = defaultPosition()
-      suppressMovedSave = true
-      overlayWin.setBounds({ x: p.x, y: p.y, width: WIDTH, height: 120 })
-      suppressMovedSave = false
+      const cfg = loadOverlay()
+      const b = collapsedBounds(cfg)
+      const p = clampToVisuals(b.x, b.y, cfg)
+      overlayWin.setBounds({ x: p.x, y: p.y, width: b.width, height: b.height })
     }
     sendConfig()
     sendDisplay()
@@ -336,6 +384,20 @@ function registerIpc() {
   ipcMain.on('overlay:settings-close', () => {
     if (settingsWin && !settingsWin.isDestroyed()) settingsWin.close()
   })
+}
+
+/** Raise and focus the main window; optionally route to a session. */
+function focusMain(sessionId) {
+  const main = getMainWindow && getMainWindow()
+  if (!main || main.isDestroyed()) return
+  if (main.isMinimized()) main.restore()
+  main.show()
+  main.focus()
+  if (typeof sessionId === 'string') {
+    // Hand the session id to the page; the client plugin routes it to
+    // the documented ctx.sessions.open() command (see src/client.js).
+    try { main.webContents.send('shell:goto-session', sessionId); trace('sent goto ' + sessionId) } catch (err) { trace('send failed: ' + (err && err.message)) }
+  }
 }
 
 // ---------- public API ----------
@@ -353,6 +415,7 @@ export function applyOverlayConfig() {
     stopWatching()
     if (overlayWin && !overlayWin.isDestroyed()) overlayWin.close()
     overlayWin = null
+    expanded = false
     return
   }
   createOverlayWindow()
@@ -369,7 +432,7 @@ export function openOverlaySettings() {
   }
   settingsWin = new BrowserWindow({
     width: 360,
-    height: 430,
+    height: 560,
     show: false,
     resizable: false,
     minimizable: false,
@@ -393,15 +456,16 @@ export function openOverlaySettings() {
   return settingsWin
 }
 
-/** Reset the overlay position AND width to defaults (tray action). */
+/** Reset the overlay position to the default corner (tray action). */
 export function resetOverlayPosition() {
+  expanded = false
+  saveOverlay({ pos: null })
   if (overlayWin && !overlayWin.isDestroyed()) {
-    const p = defaultPosition()
-    suppressMovedSave = true
-    overlayWin.setBounds({ x: p.x, y: p.y, width: WIDTH, height: 120 })
-    suppressMovedSave = false
+    const cfg = loadOverlay()
+    const b = collapsedBounds(cfg)
+    const p = clampToVisuals(b.x, b.y, cfg)
+    overlayWin.setBounds({ x: p.x, y: p.y, width: b.width, height: b.height })
   }
-  saveOverlay({ pos: null, width: null })
   sendDisplay()
 }
 

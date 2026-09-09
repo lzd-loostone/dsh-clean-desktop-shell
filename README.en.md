@@ -231,6 +231,13 @@ npm run pack    # package NSIS (Win) / DMG (mac)
 
 ## Changelog
 
+### 0.3.0
+- **Overlay redesigned as a task orb**: the solid card becomes a round floating orb in a screen corner — a static whale glyph at rest; while tasks run, a conic light sweeps the ring and a top-right badge counts running sessions (shown from 1 up).
+- **Bubble details**: hovering the orb, or a state change (needs approval / needs answer / task done), pops a frosted-glass bubble listing every session and its status; the bubble opens left or right depending on remaining screen space and auto-collapses after 5s by default (hover pauses the timer); clicking a row jumps straight to that session via the documented client face (`ctx.sessions.open`).
+- **Interaction**: the orb is freely draggable (clamped back into the work area); clicking it collapses the bubble and brings the main window to the front.
+- **New settings**: the overlay settings window gains "orb size" (40-96px) and "bubble auto-collapse" (2-15s) sliders, applied live.
+- Removed the old card's right-edge width drag (bubble width is content-sized; the position setting is now just "reset position"); per agreement, 0.2.x overlay.width is not carried over.
+
 ### 0.2.1
 - New caption safe-area spacer inside the shell: Electron's native window buttons (titleBarOverlay) float above the page, and the official right-aligned header utilities (「导出日志」/export log) landed underneath them. The desktop shell's client half registers an invisible spacer cell through the documented Slots face (`conversation.session.header.utilities`), shifting every header utility 148px left of the native overlay. Active only inside the shell (`window.shellAPI` present); plain-browser users are unaffected.
 

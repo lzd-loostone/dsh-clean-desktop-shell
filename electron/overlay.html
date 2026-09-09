@@ -8,6 +8,7 @@
   :root {
     --alpha: 0.86;
     --fs: 13px;
+    --orb: 56px;
     --card-bg: rgba(16, 19, 26, var(--alpha));
     --card-border: rgba(255, 255, 255, 0.14);
     --text: rgba(255, 255, 255, 0.95);
@@ -15,7 +16,11 @@
     --row-hover: rgba(255, 255, 255, 0.09);
     --track: rgba(255, 255, 255, 0.06);
     --shadow: 0 10px 34px rgba(0, 0, 0, 0.45);
-    --grip: rgba(255, 255, 255, 0.55);
+    --orb-face: linear-gradient(145deg, rgba(30, 36, 50, var(--alpha)), rgba(14, 17, 24, var(--alpha)));
+    --orb-stroke: rgba(255, 255, 255, 0.16);
+    --whale: #9db4e8;
+    --badge-bg: #2563eb;
+    --badge-text: #fff;
   }
   body.light {
     --card-bg: rgba(246, 247, 250, var(--alpha));
@@ -25,7 +30,9 @@
     --row-hover: rgba(0, 0, 0, 0.06);
     --track: rgba(0, 0, 0, 0.05);
     --shadow: 0 10px 30px rgba(0, 0, 0, 0.18);
-    --grip: rgba(0, 0, 0, 0.5);
+    --orb-face: linear-gradient(145deg, rgba(255, 255, 255, var(--alpha)), rgba(232, 236, 243, var(--alpha)));
+    --orb-stroke: rgba(0, 0, 0, 0.12);
+    --whale: #4a628f;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html, body { background: transparent; height: 100%; overflow: hidden; }
@@ -36,9 +43,77 @@
     user-select: none;
     -webkit-font-smoothing: antialiased;
   }
-  .card {
-    position: absolute; inset: 6px;
-    display: flex; flex-direction: column;
+  .stage { position: relative; display: flex; align-items: center; height: 100%; }
+  .stage.side-left { justify-content: flex-end; }
+  .stage.side-right { justify-content: flex-start; }
+
+  .orbcol { flex: none; display: flex; align-items: center; justify-content: center; width: calc(var(--orb) + 16px); height: 100%; }
+  .orb {
+    position: relative;
+    width: var(--orb); height: var(--orb);
+    border-radius: 50%;
+    background: var(--orb-face);
+    border: 1px solid var(--orb-stroke);
+    box-shadow: 0 6px 22px rgba(0, 0, 0, 0.38), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer;
+    touch-action: none;
+    transition: transform .15s ease;
+  }
+  .orb:hover { transform: scale(1.06); }
+  .orb:active { transform: scale(.97); }
+  .whale { width: calc(var(--orb) * 0.52); height: calc(var(--orb) * 0.52); color: var(--whale); display: block; pointer-events: none; }
+  .ring {
+    position: absolute; inset: -3px;
+    border-radius: 50%;
+    background: conic-gradient(from 0deg,
+      rgba(96, 165, 250, 0) 0 48%,
+      rgba(96, 165, 250, .95) 74%,
+      rgba(167, 139, 250, .95) 86%,
+      rgba(52, 211, 153, .85) 94%,
+      rgba(96, 165, 250, 0) 100%);
+    -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 4px), #000 calc(100% - 3px));
+            mask: radial-gradient(farthest-side, transparent calc(100% - 4px), #000 calc(100% - 3px));
+    opacity: 0;
+    transition: opacity .25s ease;
+    pointer-events: none;
+  }
+  .orb.active .ring { opacity: 1; animation: spin 1.5s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .badge {
+    position: absolute; top: -4px; right: -4px;
+    min-width: 18px; height: 18px;
+    padding: 0 5px;
+    border-radius: 9px;
+    background: var(--badge-bg);
+    color: var(--badge-text);
+    font-size: 11px; font-weight: 700; line-height: 18px; text-align: center;
+    border: 1.5px solid rgba(10, 12, 18, 0.55);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+    display: none;
+    pointer-events: none;
+  }
+  .orb.active .badge { display: block; }
+  .att {
+    position: absolute; bottom: 0; right: 0;
+    width: 12px; height: 12px; border-radius: 50%;
+    border: 2px solid rgba(10, 12, 18, 0.6);
+    display: none;
+    pointer-events: none;
+  }
+  .att.show { display: block; animation: pop .35s ease; }
+  .att.approval { background: #fbbf24; box-shadow: 0 0 8px rgba(251, 191, 36, .8); }
+  .att.question  { background: #f472b6; box-shadow: 0 0 8px rgba(244, 114, 182, .8); }
+  .att.done      { background: #e2e8f0; box-shadow: 0 0 8px rgba(226, 232, 240, .8); }
+  body.light .att { border-color: rgba(255, 255, 255, 0.8); }
+  @keyframes pop { 0% { transform: scale(0); } 70% { transform: scale(1.25); } 100% { transform: scale(1); } }
+  .orb.offline .whale, .orb.missing .whale { opacity: .45; }
+  .orb.offline, .orb.missing { filter: saturate(.2); }
+  .orb.offline .ring, .orb.missing .ring { opacity: .5; background: conic-gradient(from 0deg, transparent 0 60%, rgba(148, 163, 184, .7) 85%, transparent); animation: spin 6s linear infinite; }
+  .bubble {
+    position: absolute;
+    top: 50%;
+    width: 292px;
     background: var(--card-bg);
     border: 1px solid var(--card-border);
     border-radius: 14px;
@@ -46,115 +121,164 @@
     backdrop-filter: blur(22px) saturate(150%);
     -webkit-backdrop-filter: blur(22px) saturate(150%);
     overflow: hidden;
+    opacity: 0;
+    transform: translateY(-50%) scale(.88);
+    transition: opacity .16s ease, transform .16s ease;
+    pointer-events: none;
   }
-  .head {
-    -webkit-app-region: drag;
-    display: flex; align-items: center; gap: 8px;
-    padding: 12px 14px 8px;
-    flex: none;
+  .stage.expanded .bubble { opacity: 1; transform: translateY(-50%) scale(1); pointer-events: auto; }
+  .side-left .bubble { right: calc(var(--orb) + 22px); transform-origin: right center; }
+  .side-right .bubble { left: calc(var(--orb) + 22px); transform-origin: left center; }
+  .bubble::after {
+    content: "";
+    position: absolute; top: 50%;
+    width: 10px; height: 10px;
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    transform: translateY(-50%) rotate(45deg);
   }
-  .head .title { font-size: calc(var(--fs) + 1.5px); font-weight: 600; letter-spacing: .2px; }
+  .side-left .bubble::after { right: -6px; border-left: 0; border-bottom: 0; }
+  .side-right .bubble::after { left: -6px; border-right: 0; border-top: 0; }
+  .bar { height: 3px; flex: none; background: linear-gradient(90deg, #34d399, #60a5fa, #a78bfa, #f472b6); opacity: .85; }
+  .bhead { display: flex; align-items: center; gap: 8px; padding: 12px 14px 8px; }
+  .bhead .title { font-size: calc(var(--fs) + 1.5px); font-weight: 600; letter-spacing: .2px; }
   .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; background: #34d399; }
-  .dot.pulse { animation: pulse 1.6s ease-in-out infinite; }
-  @keyframes pulse {
+  .dot.pulse { animation: dotpulse 1.6s ease-in-out infinite; }
+  @keyframes dotpulse {
     0%, 100% { box-shadow: 0 0 0 0 rgba(96, 165, 250, .55); }
     55% { box-shadow: 0 0 0 6px rgba(96, 165, 250, 0); }
   }
-  .rows { display: flex; flex-direction: column; gap: 2px; padding: 2px 6px 8px; overflow: hidden; }
+  .rows { display: flex; flex-direction: column; gap: 2px; padding: 2px 6px 8px; }
   .row {
-    -webkit-app-region: no-drag;
     display: flex; align-items: center; gap: 9px;
     height: 40px; padding: 0 10px;
-    border-radius: 9px;
-    cursor: pointer;
+    border-radius: 9px; cursor: pointer;
     transition: background-color .12s ease;
   }
   .row:hover { background: var(--row-hover); }
-  .row .badge {
-    flex: none; font-size: calc(var(--fs) - 2px); font-weight: 600;
-    padding: 2.5px 7px; border-radius: 6px; white-space: nowrap;
-    background: var(--track);
-  }
-  .row.running .badge { color: #60a5fa; }
-  .row.approval .badge { color: #fbbf24; }
-  .row.question .badge { color: #f472b6; }
-  .row.done .badge { color: var(--text-dim); }
-  .row .name {
-    flex: 1 1 auto; min-width: 0;
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  }
+  .row .badge2 { flex: none; font-size: calc(var(--fs) - 2px); font-weight: 600; padding: 2.5px 7px; border-radius: 6px; white-space: nowrap; background: var(--track); }
+  .row.running .badge2 { color: #60a5fa; }
+  .row.approval .badge2 { color: #fbbf24; }
+  .row.question .badge2 { color: #f472b6; }
+  .row.done .badge2 { color: var(--text-dim); }
+  .row .name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .row.done .name { color: var(--text-dim); }
   .row .unread { flex: none; width: 7px; height: 7px; border-radius: 50%; background: #e2e8f0; box-shadow: 0 0 6px rgba(226,232,240,.8); }
   body.light .row .unread { background: #334155; box-shadow: none; }
   .empty { padding: 10px 16px 16px; color: var(--text-dim); font-size: calc(var(--fs) - 1px); }
-  .more { padding: 0 16px 8px; color: var(--text-dim); font-size: calc(var(--fs) - 2px); }
-  .bar { height: 3px; flex: none; background: linear-gradient(90deg, #34d399, #60a5fa, #a78bfa, #f472b6); opacity: .85; }
-  /* Attention flash: a row entering approval/question/done blinks twice. */
+  .more { padding: 0 16px 10px; color: var(--text-dim); font-size: calc(var(--fs) - 2px); }
   .row.flash { animation-duration: 1s; animation-timing-function: ease-out; animation-iteration-count: 2; }
   .row.approval.flash { animation-name: flashAmber; }
   .row.question.flash { animation-name: flashPink; }
   .row.done.flash { animation-name: flashWhite; }
-  body.light .row.approval.flash { animation-name: flashAmberL; }
-  body.light .row.question.flash { animation-name: flashPinkL; }
-  body.light .row.done.flash { animation-name: flashWhiteL; }
   @keyframes flashAmber { 0%,100% { background: transparent; } 35% { background: rgba(251, 191, 36, .42); } }
   @keyframes flashPink  { 0%,100% { background: transparent; } 35% { background: rgba(244, 114, 182, .42); } }
   @keyframes flashWhite { 0%,100% { background: transparent; } 35% { background: rgba(226, 232, 240, .40); } }
-  @keyframes flashAmberL { 0%,100% { background: transparent; } 35% { background: rgba(217, 119, 6, .30); } }
-  @keyframes flashPinkL  { 0%,100% { background: transparent; } 35% { background: rgba(190, 24, 93, .25); } }
-  @keyframes flashWhiteL { 0%,100% { background: transparent; } 35% { background: rgba(71, 85, 105, .28); } }
-  /* Right-edge width handle (height stays content-adaptive). */
-  .edge {
-    position: absolute; right: 0; top: 6px; bottom: 6px;
-    width: 10px;
-    -webkit-app-region: no-drag;
-    cursor: ew-resize;
-    z-index: 10;
-    display: flex; align-items: center; justify-content: center;
-    opacity: .16;
-    transition: opacity .15s ease;
-  }
-  .edge::before {
-    content: "";
-    width: 3px; height: 28px;
-    border-radius: 3px;
-    background: var(--grip);
-  }
-  .card:hover .edge { opacity: .8; }
 </style>
 </head>
 <body>
-  <div class="card">
-    <div class="bar"></div>
-    <div class="head">
-      <span class="dot" id="dot"></span>
-      <span class="title" id="title">DSH 空闲</span>
+  <div class="stage" id="stage">
+    <div class="bubble" id="bubble">
+      <div class="bar"></div>
+      <div class="bhead">
+        <span class="dot" id="dot"></span>
+        <span class="title" id="title">DSH 空闲</span>
+      </div>
+      <div class="rows" id="rows"></div>
+      <div class="more" id="more" hidden></div>
     </div>
-    <div class="rows" id="rows"></div>
-    <div class="more" id="more" hidden></div>
-    <div class="edge" id="edge" title="拖拽调整宽度（双击还原）"></div>
+    <div class="orbcol" id="orbcol">
+      <div class="orb" id="orb">
+        <div class="ring"></div>
+        <svg class="whale" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M3.2 13.6c.2-4.6 3.7-8.1 8.3-8.1 3.4 0 6.2 1.7 7.5 4.4l3-1.9c.6-.3 1.2.2 1 .8l-1.1 4 2.8.7c.6.2.8.9.3 1.3l-3.4 2.2c-1 2.6-3.7 4.4-7 4.4-1.5 0-2.9-.4-4-1.1"/>
+          <path d="M3.2 13.6c-.8 2.4.1 5 2.1 6.5"/>
+          <path d="M3.2 13.6c1.5-.8 3.2-1 4.7-.6"/>
+          <path d="M14.4 10.4h.01"/>
+          <path d="M17.8 4.2c-.9.8-1 2.1-.3 3"/>
+        </svg>
+        <div class="badge" id="badge">0</div>
+        <div class="att" id="att"></div>
+      </div>
+    </div>
   </div>
 <script>
   var display = null
   var cfg = null
   var firstRender = true
-  var lastKind = {} // id -> kind, to detect transitions worth flashing
+  var lastKind = {}
 
   var KIND_LABEL = { running: '处理中', approval: '需要审批', question: '需要回答', done: '已完成' }
-  var MODE_TITLE = {
-    idle: 'DSH 空闲',
-    offline: '后端未连接',
-    missing: '未接入状态源'
-  }
+  var MODE_TITLE = { idle: 'DSH 空闲', offline: '后端未连接', missing: '未接入状态源' }
   var FLASH_KINDS = { approval: true, question: true, done: true }
 
+  // hover / auto-collapse state machine
+  var HOVER_IN_MS = 150, HOVER_OUT_MS = 350
+  var localExpanded = false
+  var hoverInside = false
+  var enterT = null, leaveT = null, autoT = null
+
+  function setExpanded(v) {
+    if (localExpanded === v) return
+    localExpanded = v
+    window.overlayAPI.setExpanded(v)
+    document.getElementById('stage').classList.toggle('expanded', v)
+  }
+
+  function bumpAutoTimer() {
+    if (autoT) clearTimeout(autoT)
+    var ms = (cfg && cfg.hideMs) || (display && display.hideMs) || 5000
+    autoT = setTimeout(function () {
+      autoT = null
+      if (!hoverInside) setExpanded(false)
+    }, ms)
+  }
+
+  function onEnter() {
+    hoverInside = true
+    if (leaveT) { clearTimeout(leaveT); leaveT = null }
+    if (autoT) { clearTimeout(autoT); autoT = null }
+    if (!enterT && !localExpanded) {
+      enterT = setTimeout(function () { enterT = null; if (hoverInside) setExpanded(true) }, HOVER_IN_MS)
+    }
+  }
+  function onLeave() {
+    hoverInside = false
+    if (enterT) { clearTimeout(enterT); enterT = null }
+    if (leaveT) clearTimeout(leaveT)
+    leaveT = setTimeout(function () { leaveT = null; if (!hoverInside) setExpanded(false) }, HOVER_OUT_MS)
+  }
+
   function render() {
+    if (!display) return
+    var stage = document.getElementById('stage')
+    stage.classList.toggle('side-left', display.side === 'left')
+    stage.classList.toggle('side-right', display.side !== 'left')
+    stage.classList.toggle('expanded', !!display.expanded)
+    localExpanded = !!display.expanded
+
+    var orb = document.getElementById('orb')
+    orb.className = 'orb' + (display.mode === 'active' ? ' active' : display.mode === 'idle' ? '' : ' ' + display.mode)
+    var badge = document.getElementById('badge')
+    badge.textContent = String(display.runningCount || 0)
+
+    var att = document.getElementById('att')
+    var a = display.attention || {}
+    var want = a.approval ? 'approval' : a.question ? 'question' : a.unread ? 'done' : null
+    var attClass = 'att' + (want ? ' show ' + want : '')
+    if (att.className !== attClass) {
+      att.className = attClass
+      if (want) {
+        att.style.animation = 'none'
+        void att.offsetWidth
+        att.style.animation = ''
+      }
+    }
+
     var title = document.getElementById('title')
     var dot = document.getElementById('dot')
     var rowsEl = document.getElementById('rows')
     var moreEl = document.getElementById('more')
-    if (!display) return
-
     dot.className = 'dot'
     if (display.mode === 'idle') {
       title.textContent = MODE_TITLE.idle
@@ -168,17 +292,27 @@
       dot.style.background = '#64748b'
     }
 
+    var attentionChanged = false
     rowsEl.innerHTML = ''
     var list = display.rows || []
     if (list.length === 0) {
       var e = document.createElement('div')
       e.className = 'empty'
-      e.textContent = display.mode === 'missing' ? '在 cordis 中启用桌面壳插件后显示' : display.mode === 'idle' ? '等待任务开始…' : ''
-      if (e.textContent) rowsEl.appendChild(e)
+      e.textContent = display.mode === 'missing' ? '在 cordis 中启用桌面壳插件后显示' : '等待任务开始…'
+      rowsEl.appendChild(e)
     }
-    for (var i = 0; i < list.length; i++) rowsEl.appendChild(makeRow(list[i]))
+    for (var i = 0; i < list.length; i++) {
+      var row = makeRow(list[i])
+      if (row.attentionChanged) attentionChanged = true
+      rowsEl.appendChild(row)
+    }
     moreEl.hidden = !display.more
     if (display.more) moreEl.textContent = '+ 还有 ' + display.more + ' 个会话…'
+
+    if (!firstRender && attentionChanged && !hoverInside) {
+      setExpanded(true)
+      bumpAutoTimer()
+    }
     firstRender = false
   }
 
@@ -186,8 +320,9 @@
     var el = document.createElement('div')
     el.className = 'row ' + r.kind
     el.title = r.name
+    var changed = lastKind[r.id] !== r.kind
     var badge = document.createElement('span')
-    badge.className = 'badge'
+    badge.className = 'badge2'
     badge.textContent = KIND_LABEL[r.kind] || r.kind
     var name = document.createElement('span')
     name.className = 'name'
@@ -199,12 +334,13 @@
       u.className = 'unread'
       el.appendChild(u)
     }
-    if (!firstRender && FLASH_KINDS[r.kind] && lastKind[r.id] !== r.kind) {
+    if (!firstRender && FLASH_KINDS[r.kind] && changed) {
       el.classList.add('flash')
       el.addEventListener('animationend', function () { el.classList.remove('flash') })
     }
     lastKind[r.id] = r.kind
     el.addEventListener('click', function () { window.overlayAPI.rowClick(r.id) })
+    el.attentionChanged = changed && !!FLASH_KINDS[r.kind]
     return el
   }
 
@@ -212,47 +348,53 @@
     if (!cfg) return
     document.documentElement.style.setProperty('--alpha', String(cfg.opacity))
     document.documentElement.style.setProperty('--fs', (cfg.fontSize || 13) + 'px')
+    document.documentElement.style.setProperty('--orb', (cfg.orbSize || 56) + 'px')
     document.body.classList.toggle('light', cfg.theme === 'light')
   }
 
-  // Right-edge width drag. Pointer capture keeps the stream alive when the
-  // cursor outruns the narrow window; deltas coalesce per animation frame.
+  // Orb: manual drag (window is focusable:false with no OS drag region —
+  // clicks must survive, so movement is pointer-delta driven over IPC).
   ;(function () {
-    var edge = document.getElementById('edge')
-    edge.addEventListener('pointerdown', function (e) {
+    var orb = document.getElementById('orb')
+    orb.addEventListener('pointerdown', function (e) {
       e.preventDefault()
-      e.stopPropagation()
-      try { edge.setPointerCapture(e.pointerId) } catch (err) {}
-      var lastX = e.clientX
-      var dw = 0, raf = 0
+      try { orb.setPointerCapture(e.pointerId) } catch (err) {}
+      var sx = e.clientX, sy = e.clientY
+      var lx = sx, ly = sy, dx = 0, dy = 0, moved = false, raf = 0
       function flush() {
         raf = 0
-        if (!dw) return
-        window.overlayAPI.resize(dw, 0)
-        dw = 0
+        if (!dx && !dy) return
+        window.overlayAPI.orbDrag(dx, dy)
+        dx = 0; dy = 0
       }
       function move(ev) {
-        dw += ev.clientX - lastX
-        lastX = ev.clientX
-        if (!raf) raf = requestAnimationFrame(flush)
+        dx += ev.clientX - lx; dy += ev.clientY - ly
+        lx = ev.clientX; ly = ev.clientY
+        if (!moved && Math.abs(ev.clientX - sx) + Math.abs(ev.clientY - sy) > 4) moved = true
+        if (moved && !raf) raf = requestAnimationFrame(flush)
       }
       function up() {
-        edge.removeEventListener('pointermove', move)
-        edge.removeEventListener('pointerup', up)
-        edge.removeEventListener('pointercancel', up)
+        orb.removeEventListener('pointermove', move)
+        orb.removeEventListener('pointerup', up)
+        orb.removeEventListener('pointercancel', up)
         if (raf) cancelAnimationFrame(raf)
-        flush()
-        window.overlayAPI.resizeEnd()
+        if (moved) {
+          flush()
+          window.overlayAPI.orbDragEnd()
+        } else {
+          setExpanded(false)
+          window.overlayAPI.orbClick()
+        }
       }
-      edge.addEventListener('pointermove', move)
-      edge.addEventListener('pointerup', up)
-      edge.addEventListener('pointercancel', up)
-    })
-    edge.addEventListener('dblclick', function (e) {
-      e.stopPropagation()
-      window.overlayAPI.resetSize()
+      orb.addEventListener('pointermove', move)
+      orb.addEventListener('pointerup', up)
+      orb.addEventListener('pointercancel', up)
     })
   })()
+
+  var stage = document.getElementById('stage')
+  stage.addEventListener('mouseenter', onEnter)
+  stage.addEventListener('mouseleave', onLeave)
 
   window.overlayAPI.onState(function (d) { display = d; render() })
   window.overlayAPI.onConfig(function (c) { cfg = c; applyCfg(); render() })
