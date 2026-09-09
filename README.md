@@ -212,6 +212,9 @@ npm run pack    # 打包 NSIS (Win) / DMG (mac)
 
 ## 更新历史
 
+### 0.2.1
+- 壳内新增**头部安全区占位**：Electron 的原生窗口按钮（titleBarOverlay）悬浮在页面之上，官方「导出日志」等头部工具紧贴右缘会被压住。桌面壳的 client 半区经官方 Slots 面（`conversation.session.header.utilities`）注册一个隐形占位 cell，把全部头部工具左移 148px 让开原生按钮；仅在壳内生效（`window.shellAPI` 存在时），浏览器直连用户无感。
+
 ### 0.2.0
 - **新增「任务悬浮窗」**：桌面置顶的常开小卡片（类 GPU-Z / 硬件监控风格），实时显示 DSH 会话状态——
   - 无会话工作时显示「DSH 空闲」；有会话工作显示「N 个会话运行中」+ 每个会话的名字；

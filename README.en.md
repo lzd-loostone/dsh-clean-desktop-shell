@@ -231,6 +231,9 @@ npm run pack    # package NSIS (Win) / DMG (mac)
 
 ## Changelog
 
+### 0.2.1
+- New caption safe-area spacer inside the shell: Electron's native window buttons (titleBarOverlay) float above the page, and the official right-aligned header utilities (「导出日志」/export log) landed underneath them. The desktop shell's client half registers an invisible spacer cell through the documented Slots face (`conversation.session.header.utilities`), shifting every header utility 148px left of the native overlay. Active only inside the shell (`window.shellAPI` present); plain-browser users are unaffected.
+
 ### 0.2.0
 - **New task overlay window**: an always-on-top desktop card (GPU-monitor style) showing live DSH session status —
   - "DSH idle" when nothing works; "N sessions running" plus per-session names when active;
