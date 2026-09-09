@@ -211,28 +211,41 @@
     document.body.classList.toggle('light', cfg.theme === 'light')
   }
 
-  // Corner-drag resize: pointer deltas stream to main ('overlay:resize');
-  // pointerup persists the final size there. Double-click restores auto.
+  // Corner-drag resize. Pointer capture keeps the stream alive even when
+  // the cursor outruns the shrinking window (the classic "stalls when
+  // dragging inward" bug); deltas are coalesced per animation frame so
+  // the IPC queue cannot drift behind the pointer.
   ;(function () {
     var grip = document.getElementById('grip')
     grip.addEventListener('pointerdown', function (e) {
       e.preventDefault()
       e.stopPropagation()
-      var lx = e.clientX, ly = e.clientY
-      var move = function (ev) {
-        var dw = ev.clientX - lx, dh = ev.clientY - ly
-        if (dw || dh) {
-          lx = ev.clientX; ly = ev.clientY
-          window.overlayAPI.resize(dw, dh)
-        }
+      try { grip.setPointerCapture(e.pointerId) } catch (err) {}
+      var lastX = e.clientX, lastY = e.clientY
+      var dw = 0, dh = 0, raf = 0
+      function flush() {
+        raf = 0
+        if (!dw && !dh) return
+        window.overlayAPI.resize(dw, dh)
+        dw = 0; dh = 0
       }
-      var up = function () {
-        document.removeEventListener('pointermove', move)
-        document.removeEventListener('pointerup', up)
+      function move(ev) {
+        dw += ev.clientX - lastX
+        dh += ev.clientY - lastY
+        lastX = ev.clientX; lastY = ev.clientY
+        if (!raf) raf = requestAnimationFrame(flush)
+      }
+      function up() {
+        grip.removeEventListener('pointermove', move)
+        grip.removeEventListener('pointerup', up)
+        grip.removeEventListener('pointercancel', up)
+        if (raf) { cancelAnimationFrame(raf) }
+        flush()
         window.overlayAPI.resizeEnd()
       }
-      document.addEventListener('pointermove', move)
-      document.addEventListener('pointerup', up)
+      grip.addEventListener('pointermove', move)
+      grip.addEventListener('pointerup', up)
+      grip.addEventListener('pointercancel', up)
     })
     grip.addEventListener('dblclick', function (e) {
       e.stopPropagation()

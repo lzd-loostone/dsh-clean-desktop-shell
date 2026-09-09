@@ -127,19 +127,19 @@ function sendDisplay() {
     more: Math.max(0, full.rows.length - capacity),
     now: full.now,
   }
-  const b = overlayWin.getBounds()
-  const bounds = { x: b.x, y: b.y, width: userW }
-  if (resizeActive) {
-    bounds.height = b.height // mid-drag: the renderer loop sets the height
-  } else {
+  // Mid-drag the renderer's corner loop owns the bounds — applying the
+  // (not yet persisted) config size here is what made the card flicker.
+  if (!resizeActive) {
+    const b = overlayWin.getBounds()
+    const bounds = { x: b.x, y: b.y, width: userW }
     const contentH = HEADER_HEIGHT + PADDING + Math.max(1, display.rows.length) * ROW_HEIGHT + (display.more ? 22 : 0)
     const wantH = Math.max(contentH, cfg.size && cfg.size.h ? cfg.size.h : 0)
     const wa = screen.getDisplayNearestPoint({ x: b.x, y: b.y }).workArea
     bounds.height = clamp(wantH, MIN_H, Math.min(MAX_H, wa.height))
+    suppressMovedSave = true
+    overlayWin.setBounds(bounds)
+    suppressMovedSave = false
   }
-  suppressMovedSave = true
-  overlayWin.setBounds(bounds)
-  suppressMovedSave = false
   if (!overlayWin.isVisible()) overlayWin.showInactive()
   overlayWin.webContents.send('overlay:state', display)
 }
@@ -250,6 +250,7 @@ function registerIpc() {
   ipcReady = true
 
   ipcMain.on('overlay:ready', () => {
+    resizeActive = false // a reloaded page is not mid-drag
     sendConfig()
     sendDisplay()
   })
