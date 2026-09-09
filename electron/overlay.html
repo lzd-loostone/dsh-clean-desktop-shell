@@ -103,20 +103,24 @@
   @keyframes flashAmberL { 0%,100% { background: transparent; } 35% { background: rgba(217, 119, 6, .30); } }
   @keyframes flashPinkL  { 0%,100% { background: transparent; } 35% { background: rgba(190, 24, 93, .25); } }
   @keyframes flashWhiteL { 0%,100% { background: transparent; } 35% { background: rgba(71, 85, 105, .28); } }
-  /* Bottom-right resize grip (width + min-height, persisted by main). */
-  .grip {
-    position: absolute; right: 1px; bottom: 1px;
-    width: 20px; height: 20px;
+  /* Right-edge width handle (height stays content-adaptive). */
+  .edge {
+    position: absolute; right: 0; top: 6px; bottom: 6px;
+    width: 10px;
     -webkit-app-region: no-drag;
-    cursor: nwse-resize;
-    opacity: .22;
-    transition: opacity .15s ease;
+    cursor: ew-resize;
     z-index: 10;
-    background:
-      linear-gradient(135deg, transparent 0 50%, var(--grip) 50% 58%, transparent 58% 70%, var(--grip) 70% 78%, transparent 78% 90%, var(--grip) 90% 100%);
-    border-radius: 0 0 13px 0;
+    display: flex; align-items: center; justify-content: center;
+    opacity: .16;
+    transition: opacity .15s ease;
   }
-  .card:hover .grip { opacity: .8; }
+  .edge::before {
+    content: "";
+    width: 3px; height: 28px;
+    border-radius: 3px;
+    background: var(--grip);
+  }
+  .card:hover .edge { opacity: .8; }
 </style>
 </head>
 <body>
@@ -128,7 +132,7 @@
     </div>
     <div class="rows" id="rows"></div>
     <div class="more" id="more" hidden></div>
-    <div class="grip" id="grip" title="拖拽调整大小（双击还原）"></div>
+    <div class="edge" id="edge" title="拖拽调整宽度（双击还原）"></div>
   </div>
 <script>
   var display = null
@@ -211,43 +215,40 @@
     document.body.classList.toggle('light', cfg.theme === 'light')
   }
 
-  // Corner-drag resize. Pointer capture keeps the stream alive even when
-  // the cursor outruns the shrinking window (the classic "stalls when
-  // dragging inward" bug); deltas are coalesced per animation frame so
-  // the IPC queue cannot drift behind the pointer.
+  // Right-edge width drag. Pointer capture keeps the stream alive when the
+  // cursor outruns the narrow window; deltas coalesce per animation frame.
   ;(function () {
-    var grip = document.getElementById('grip')
-    grip.addEventListener('pointerdown', function (e) {
+    var edge = document.getElementById('edge')
+    edge.addEventListener('pointerdown', function (e) {
       e.preventDefault()
       e.stopPropagation()
-      try { grip.setPointerCapture(e.pointerId) } catch (err) {}
-      var lastX = e.clientX, lastY = e.clientY
-      var dw = 0, dh = 0, raf = 0
+      try { edge.setPointerCapture(e.pointerId) } catch (err) {}
+      var lastX = e.clientX
+      var dw = 0, raf = 0
       function flush() {
         raf = 0
-        if (!dw && !dh) return
-        window.overlayAPI.resize(dw, dh)
-        dw = 0; dh = 0
+        if (!dw) return
+        window.overlayAPI.resize(dw, 0)
+        dw = 0
       }
       function move(ev) {
         dw += ev.clientX - lastX
-        dh += ev.clientY - lastY
-        lastX = ev.clientX; lastY = ev.clientY
+        lastX = ev.clientX
         if (!raf) raf = requestAnimationFrame(flush)
       }
       function up() {
-        grip.removeEventListener('pointermove', move)
-        grip.removeEventListener('pointerup', up)
-        grip.removeEventListener('pointercancel', up)
-        if (raf) { cancelAnimationFrame(raf) }
+        edge.removeEventListener('pointermove', move)
+        edge.removeEventListener('pointerup', up)
+        edge.removeEventListener('pointercancel', up)
+        if (raf) cancelAnimationFrame(raf)
         flush()
         window.overlayAPI.resizeEnd()
       }
-      grip.addEventListener('pointermove', move)
-      grip.addEventListener('pointerup', up)
-      grip.addEventListener('pointercancel', up)
+      edge.addEventListener('pointermove', move)
+      edge.addEventListener('pointerup', up)
+      edge.addEventListener('pointercancel', up)
     })
-    grip.addEventListener('dblclick', function (e) {
+    edge.addEventListener('dblclick', function (e) {
       e.stopPropagation()
       window.overlayAPI.resetSize()
     })

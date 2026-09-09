@@ -33,12 +33,12 @@ const ROW_HEIGHT = 44
 const HEADER_HEIGHT = 52
 const PADDING = 18
 const MAX_ROWS = 6
-const WIDTH = 280 // default width; overlay.size overrides after user resizing
+const WIDTH = 280 // default width; overlay.width overrides after edge dragging
 const MIN_W = 220
 const MAX_W = 640
 const MIN_H = 96
 const MAX_H = 720
-let resizeActive = false // corner-drag loop owns the height while true
+let resizeActive = false // edge-drag loop owns the width while true
 
 function clamp(v, lo, hi) {
   return Math.min(Math.max(v, lo), hi)
@@ -129,31 +129,28 @@ function buildDisplay() {
 function sendDisplay() {
   if (!overlayWin || overlayWin.isDestroyed()) return
   const cfg = loadOverlay()
-  const userW = cfg.size && cfg.size.w ? clamp(cfg.size.w, MIN_W, MAX_W) : WIDTH
-  // A user-tallened window shows more rows instead of empty space.
-  const capacity = cfg.size && cfg.size.h
-    ? clamp(Math.floor((cfg.size.h - HEADER_HEIGHT - PADDING) / ROW_HEIGHT), 1, 12)
-    : MAX_ROWS
+  const width = cfg.width ? clamp(cfg.width, MIN_W, MAX_W) : WIDTH
   const full = buildDisplay()
   const display = {
     mode: full.mode,
     runningCount: full.runningCount,
-    rows: full.rows.slice(0, capacity),
-    more: Math.max(0, full.rows.length - capacity),
+    rows: full.rows.slice(0, MAX_ROWS),
+    more: Math.max(0, full.rows.length - MAX_ROWS),
     now: full.now,
   }
-  // Mid-drag the renderer's corner loop owns the bounds — applying the
-  // (not yet persisted) config size here is what made the card flicker.
+  // Height always adapts to the row count. Mid-drag the renderer's edge
+  // loop owns the width — applying the (not yet persisted) config width
+  // here is what made the card flicker.
   if (!resizeActive) {
     const b = overlayWin.getBounds()
-    const bounds = { x: b.x, y: b.y, width: userW }
     const contentH = HEADER_HEIGHT + PADDING + Math.max(1, display.rows.length) * ROW_HEIGHT + (display.more ? 22 : 0)
-    const wantH = Math.max(contentH, cfg.size && cfg.size.h ? cfg.size.h : 0)
     const wa = screen.getDisplayNearestPoint({ x: b.x, y: b.y }).workArea
-    bounds.height = clamp(wantH, MIN_H, Math.min(MAX_H, wa.height))
-    suppressMovedSave = true
-    overlayWin.setBounds(bounds)
-    suppressMovedSave = false
+    const height = clamp(contentH, MIN_H, Math.min(MAX_H, wa.height))
+    if (b.width !== width || b.height !== height) {
+      suppressMovedSave = true
+      overlayWin.setBounds({ x: b.x, y: b.y, width, height })
+      suppressMovedSave = false
+    }
   }
   if (!overlayWin.isVisible()) overlayWin.showInactive()
   overlayWin.webContents.send('overlay:state', display)
@@ -244,8 +241,8 @@ function createOverlayWindow() {
   overlayWin.setBounds({
     x: pos.x,
     y: pos.y,
-    width: cfg.size && cfg.size.w ? clamp(cfg.size.w, MIN_W, MAX_W) : WIDTH,
-    height: cfg.size && cfg.size.h ? clamp(cfg.size.h, MIN_H, MAX_H) : 120,
+    width: cfg.width ? clamp(cfg.width, MIN_W, MAX_W) : WIDTH,
+    height: 120, // sendDisplay adapts the height immediately after
   })
   overlayWin.showInactive()
   return overlayWin
@@ -289,33 +286,31 @@ function registerIpc() {
     sendDisplay()
   })
 
-  // Corner-drag resizing: the renderer grip sends incremental deltas; the
-  // final size persists as overlay.size (width also raises row capacity).
+  // Right-edge drag resizing: width only (220–640), height stays content
+  // adaptive. Deltas coalesce in the renderer; the final width persists.
   ipcMain.on('overlay:resize', (_e, d) => {
     if (!overlayWin || overlayWin.isDestroyed()) return
     const dw = d && Number.isFinite(d.dw) ? d.dw : 0
-    const dh = d && Number.isFinite(d.dh) ? d.dh : 0
+    if (!dw) return
     resizeActive = true
     const b = overlayWin.getBounds()
-    const wa = screen.getDisplayNearestPoint({ x: b.x, y: b.y }).workArea
     overlayWin.setBounds({
       x: b.x,
       y: b.y,
       width: clamp(b.width + dw, MIN_W, MAX_W),
-      height: clamp(b.height + dh, MIN_H, Math.min(MAX_H, wa.height)),
+      height: b.height,
     })
   })
 
   ipcMain.on('overlay:reset-size', () => {
-    saveOverlay({ size: null })
+    saveOverlay({ width: null })
     sendDisplay()
   })
 
   ipcMain.on('overlay:resize-end', () => {
     resizeActive = false
     if (!overlayWin || overlayWin.isDestroyed()) return
-    const b = overlayWin.getBounds()
-    saveOverlay({ size: { w: b.width, h: b.height } })
+    saveOverlay({ width: overlayWin.getBounds().width })
     sendDisplay()
   })
 
@@ -327,7 +322,7 @@ function registerIpc() {
   })
 
   ipcMain.on('overlay:settings-reset-pos', () => {
-    saveOverlay({ pos: null, size: null })
+    saveOverlay({ pos: null, width: null })
     if (overlayWin && !overlayWin.isDestroyed()) {
       const p = defaultPosition()
       suppressMovedSave = true
@@ -398,7 +393,7 @@ export function openOverlaySettings() {
   return settingsWin
 }
 
-/** Reset the overlay position AND size to defaults (tray action). */
+/** Reset the overlay position AND width to defaults (tray action). */
 export function resetOverlayPosition() {
   if (overlayWin && !overlayWin.isDestroyed()) {
     const p = defaultPosition()
@@ -406,7 +401,7 @@ export function resetOverlayPosition() {
     overlayWin.setBounds({ x: p.x, y: p.y, width: WIDTH, height: 120 })
     suppressMovedSave = false
   }
-  saveOverlay({ pos: null, size: null })
+  saveOverlay({ pos: null, width: null })
   sendDisplay()
 }
 

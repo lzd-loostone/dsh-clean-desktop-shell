@@ -35,8 +35,9 @@ const DEFAULTS = {
     theme: 'dark', // 'dark' | 'light'
     fontSize: 13,
     pos: null,
-    // size: null → auto (280 × content height); set by corner dragging.
-    size: null,
+    // width: null → default 280; set by dragging the right edge.
+    // Height always adapts to the row count — no user height.
+    width: null,
   },
 }
 
@@ -67,9 +68,7 @@ export function loadConfig() {
       if (src.theme === 'dark' || src.theme === 'light') o.theme = src.theme
       if (typeof src.fontSize === 'number' && src.fontSize >= 11 && src.fontSize <= 18) o.fontSize = Math.round(src.fontSize)
       if (src.pos && typeof src.pos.x === 'number' && typeof src.pos.y === 'number') o.pos = { x: Math.round(src.pos.x), y: Math.round(src.pos.y) }
-      if (src.size && typeof src.size.w === 'number' && typeof src.size.h === 'number') {
-        o.size = { w: Math.round(Math.min(Math.max(src.size.w, 220), 640)), h: Math.round(Math.min(Math.max(src.size.h, 96), 720)) }
-      }
+      if (typeof src.width === 'number' && src.width >= 220 && src.width <= 640) o.width = Math.round(src.width)
       cached.overlay = o
     }
   } catch {
