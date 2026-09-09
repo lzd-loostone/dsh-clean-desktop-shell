@@ -8,14 +8,14 @@ Does exactly one thing: wraps your already-configured DSH Web in a clean native 
 
 [English](README.en.md) · [中文](README.md)
 
-[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS-0078D6?logo=windows&logoColor=white)](https://github.com/Icather/dsh-clean-desktop-shell)
+[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS-0078D6?logo=windows&logoColor=white)](https://github.com/lzd-loostone/dsh-clean-desktop-shell)
 [![License](https://img.shields.io/badge/License-MIT-22c55e)](LICENSE)
-[![Release](https://img.shields.io/github/v/release/Icather/dsh-clean-desktop-shell?color=blue)](https://github.com/Icather/dsh-clean-desktop-shell/releases/latest)
+[![Release](https://img.shields.io/github/v/release/Icather/dsh-clean-desktop-shell?color=blue)](https://github.com/lzd-loostone/dsh-clean-desktop-shell/releases/latest)
 [![DSH](https://img.shields.io/badge/DeepSeek_Harness-0.1.1--rc.2-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness)
-[![Contributors](https://img.shields.io/github/contributors/Icather/dsh-clean-desktop-shell?color=blueviolet)](https://github.com/Icather/dsh-clean-desktop-shell/graphs/contributors)
+[![Contributors](https://img.shields.io/github/contributors/Icather/dsh-clean-desktop-shell?color=blueviolet)](https://github.com/lzd-loostone/dsh-clean-desktop-shell/graphs/contributors)
 [![npm downloads](https://img.shields.io/npm/dt/dsh-clean-desktop-shell?logo=npm&color=cb3837&label=npm%20downloads)](https://www.npmjs.com/package/dsh-clean-desktop-shell)
-[![Installs](https://img.shields.io/github/downloads/Icather/dsh-clean-desktop-shell/total?logo=github&color=2ea043&label=installs)](https://github.com/Icather/dsh-clean-desktop-shell/releases)
-[![Clones](https://img.shields.io/badge/clones-154%20%2F%2014d-8957E5?logo=github&label=clones)](https://github.com/Icather/dsh-clean-desktop-shell)
+[![Installs](https://img.shields.io/github/downloads/Icather/dsh-clean-desktop-shell/total?logo=github&color=2ea043&label=installs)](https://github.com/lzd-loostone/dsh-clean-desktop-shell/releases)
+[![Clones](https://img.shields.io/badge/clones-154%20%2F%2014d-8957E5?logo=github&label=clones)](https://github.com/lzd-loostone/dsh-clean-desktop-shell)
 
 </div>
 
@@ -230,6 +230,19 @@ npm run pack    # package NSIS (Win) / DMG (mac)
 ```
 
 ## Changelog
+
+### 0.2.0
+- **New task overlay window**: an always-on-top desktop card (GPU-monitor style) showing live DSH session status —
+  - "DSH idle" when nothing works; "N sessions running" plus per-session names when active;
+  - each row is badged 处理中 / 需要审批 / 需要回答 / 已完成 (Running / Needs approval / Needs answer / Done); a finished task becomes unread (white dot) until you click its row, which clears the mark and brings the main window to the front;
+  - drag the header to move (position remembered; resettable from the tray), translucent frosted background with adjustable opacity (20%–100%), dark/light theme and font size (11–18px);
+  - controls live in tray → "任务悬浮窗" submenu (show toggle / Settings… / Reset position); changes apply instantly.
+- Built solely on the documented cordis extension surface: `agent/created` / `agent/status` / `agent/disposed` subscriptions plus transparent observers on the `approval/request` and `user-questions/request` waterfalls (outcomes forwarded untouched). The plugin half atomically writes a snapshot to `~/.dsh/desktop-shell-state.json`; the Electron shell only reads that file — no port, no token, no internal transport. Heartbeat older than 12s shows "backend offline".
+- **dsh 0.1.2 launch-token support**: the shell loads the tokenized authUrl instead of the bare loopback root, fixing 401 blank pages after reload; backend restarts re-attach automatically (merged fix/dsh-0.1.2-index-token-auth).
+- Forked to `lzd-loostone/dsh-clean-desktop-shell`: auto-update sources (GitHub Releases / electron-updater publish) and package metadata now point at the fork, so self-updates no longer pull from upstream.
+
+### 0.1.11
+- Fixed a `checkForUpdate` ReferenceError introduced in v0.1.10.
 
 ### 0.1.10
 - Version comparison now uses semver (`semver.coerce` + `semver.gt`) — the industry standard — replacing the hand-rolled tuple parser.

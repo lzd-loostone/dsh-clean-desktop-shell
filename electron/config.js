@@ -27,6 +27,15 @@ const DEFAULTS = {
   // True once the first-run "create a desktop shortcut?" prompt was shown
   // (so it never nags again). The tray item stays available regardless.
   shortcutAsked: false,
+  // Task overlay window (GPU-monitor style always-on-top status card).
+  //  pos: null → auto (top-right of the primary display); set by dragging.
+  overlay: {
+    enabled: true,
+    opacity: 0.86,
+    theme: 'dark', // 'dark' | 'light'
+    fontSize: 13,
+    pos: null,
+  },
 }
 
 let cached = null
@@ -46,10 +55,35 @@ export function loadConfig() {
     if (typeof parsed.closeToTray === 'boolean') cached.closeToTray = parsed.closeToTray
     if (typeof parsed.backendPath === 'string' || parsed.backendPath === null) cached.backendPath = parsed.backendPath
     if (typeof parsed.shortcutAsked === 'boolean') cached.shortcutAsked = parsed.shortcutAsked
+    // Overlay: per-field validated; anything unknown falls back to the
+    // default. A hand-corrupted file can never poison the overlay.
+    if (parsed.overlay && typeof parsed.overlay === 'object') {
+      const o = { ...DEFAULTS.overlay }
+      const src = parsed.overlay
+      if (typeof src.enabled === 'boolean') o.enabled = src.enabled
+      if (typeof src.opacity === 'number' && src.opacity >= 0.2 && src.opacity <= 1) o.opacity = src.opacity
+      if (src.theme === 'dark' || src.theme === 'light') o.theme = src.theme
+      if (typeof src.fontSize === 'number' && src.fontSize >= 11 && src.fontSize <= 18) o.fontSize = Math.round(src.fontSize)
+      if (src.pos && typeof src.pos.x === 'number' && typeof src.pos.y === 'number') o.pos = { x: Math.round(src.pos.x), y: Math.round(src.pos.y) }
+      cached.overlay = o
+    }
   } catch {
     cached = { ...DEFAULTS }
   }
   return cached
+}
+
+/** Current overlay settings (validated view of config.overlay). */
+export function loadOverlay() {
+  return { ...DEFAULTS.overlay, ...loadConfig().overlay }
+}
+
+/** Merge a patch into the overlay block and persist. Returns the new block. */
+export function saveOverlay(patch) {
+  const cur = loadConfig()
+  const next = { ...cur, overlay: { ...cur.overlay, ...patch } }
+  saveConfig(next)
+  return loadOverlay()
 }
 
 export function saveConfig(next) {

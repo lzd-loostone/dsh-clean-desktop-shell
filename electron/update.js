@@ -24,8 +24,8 @@ import semver from 'semver'
 import { showProgress, setProgress, closeProgress } from './progress.js'
 import { loadConfig } from './config.js'
 
-const REPO_URL = 'https://github.com/Icather/dsh-clean-desktop-shell'
-const RELEASES_API = 'https://api.github.com/repos/Icather/dsh-clean-desktop-shell/releases/latest'
+const REPO_URL = 'https://github.com/lzd-loostone/dsh-clean-desktop-shell'
+const RELEASES_API = 'https://api.github.com/repos/lzd-loostone/dsh-clean-desktop-shell/releases/latest'
 // npm registry — the update source for plugin (npm-installed) mode.
 const NPM_REGISTRY_API = 'https://registry.npmjs.org/dsh-clean-desktop-shell'
 

@@ -8,14 +8,14 @@
 
 [English](README.en.md) · [中文](README.md)
 
-[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS-0078D6?logo=windows&logoColor=white)](https://github.com/Icather/dsh-clean-desktop-shell)
+[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS-0078D6?logo=windows&logoColor=white)](https://github.com/lzd-loostone/dsh-clean-desktop-shell)
 [![License](https://img.shields.io/badge/License-MIT-22c55e)](LICENSE)
-[![Release](https://img.shields.io/github/v/release/Icather/dsh-clean-desktop-shell?color=blue)](https://github.com/Icather/dsh-clean-desktop-shell/releases/latest)
+[![Release](https://img.shields.io/github/v/release/Icather/dsh-clean-desktop-shell?color=blue)](https://github.com/lzd-loostone/dsh-clean-desktop-shell/releases/latest)
 [![DSH](https://img.shields.io/badge/DeepSeek_Harness-0.1.1--rc.2-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness)
-[![Contributors](https://img.shields.io/github/contributors/Icather/dsh-clean-desktop-shell?color=blueviolet)](https://github.com/Icather/dsh-clean-desktop-shell/graphs/contributors)
+[![Contributors](https://img.shields.io/github/contributors/Icather/dsh-clean-desktop-shell?color=blueviolet)](https://github.com/lzd-loostone/dsh-clean-desktop-shell/graphs/contributors)
 [![npm downloads](https://img.shields.io/npm/dt/dsh-clean-desktop-shell?logo=npm&color=cb3837&label=npm%20downloads)](https://www.npmjs.com/package/dsh-clean-desktop-shell)
-[![Installs](https://img.shields.io/github/downloads/Icather/dsh-clean-desktop-shell/total?logo=github&color=2ea043&label=installs)](https://github.com/Icather/dsh-clean-desktop-shell/releases)
-[![Clones](https://img.shields.io/badge/clones-154%20%2F%2014d-8957E5?logo=github&label=clones)](https://github.com/Icather/dsh-clean-desktop-shell)
+[![Installs](https://img.shields.io/github/downloads/Icather/dsh-clean-desktop-shell/total?logo=github&color=2ea043&label=installs)](https://github.com/lzd-loostone/dsh-clean-desktop-shell/releases)
+[![Clones](https://img.shields.io/badge/clones-154%20%2F%2014d-8957E5?logo=github&label=clones)](https://github.com/lzd-loostone/dsh-clean-desktop-shell)
 
 </div>
 
@@ -211,6 +211,19 @@ npm run pack    # 打包 NSIS (Win) / DMG (mac)
 ```
 
 ## 更新历史
+
+### 0.2.0
+- **新增「任务悬浮窗」**：桌面置顶的常开小卡片（类 GPU-Z / 硬件监控风格），实时显示 DSH 会话状态——
+  - 无会话工作时显示「DSH 空闲」；有会话工作显示「N 个会话运行中」+ 每个会话的名字；
+  - 每行状态区分「处理中 / 需要审批 / 需要回答 / 已完成」；任务完成转为未读（白点），点击该会话行后消失并把主窗口带到前台；
+  - 头部可拖动（位置自动记忆，托盘可重置），背景半透明毛玻璃（20%–100% 透明度、深/浅主题、字号 11–18px 均可调）；
+  - 控制入口：托盘右键 →「任务悬浮窗」子菜单（显示开关 / 设置… / 重置位置），设置窗改动即时生效。
+- 数据来源仅官方 cordis 公开扩展面：订阅 `agent/created` / `agent/status` / `agent/disposed`，并在 `approval/request`、`user-questions/request` waterfall 上挂透明观察者（原样转发，不改变审批语义）；插件端把快照原子写入 `~/.dsh/desktop-shell-state.json`，壳侧只读该文件——无端口、无 token、无内部 transport。心跳超过 12s 视为后端未连接并提示。
+- **适配 dsh 0.1.2 启动令牌（launch-token）**：壳加载带 token 的 authUrl 而非裸 loopback 根地址，修复刷新/重载后 401 空白页；重启后端自动重挂载（合并 fix/dsh-0.1.2-index-token-auth）。
+- 仓库 fork 至 `lzd-loostone/dsh-clean-desktop-shell`：自更新（GitHub Releases / electron-updater publish 源）与 npm 依赖解析地址同步切换，不再从上游取包。
+
+### 0.1.11
+- 修复 v0.1.10 中 `checkForUpdate` 的 ReferenceError。
 
 ### 0.1.10
 - 版本比较改用 semver（industry-standard `semver.coerce` + `semver.gt`），替换手写元组比较。

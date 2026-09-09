@@ -54,6 +54,19 @@ export function launchLogPath() {
 }
 
 /**
+ * Session-state handoff file for the task overlay window.
+ *
+ * The host half writes it from inside the dsh process; the Electron shell
+ * (which may be the plugin-spawned instance or an installer-mode instance
+ * with no parent) reads it. A shared file beats a pipe or a port: it
+ * survives backend restarts and single-instance relaunches, and keeps the
+ * whole channel free of DSH-internal transport details.
+ */
+export function stateFilePath() {
+  return join(dshHome(), 'desktop-shell-state.json')
+}
+
+/**
  * Download a file to disk via curl — shared by runtime provisioning and
  * icon patching. Chosen over native fetch because undici (Node's fetch)
  * ignores HTTP(S)_PROXY env vars unless a proxy dispatcher is wired in,

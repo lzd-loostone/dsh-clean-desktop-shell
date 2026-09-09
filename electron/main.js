@@ -15,6 +15,7 @@ import { createTray, refreshTrayMenu } from './tray.js'
 import { loadConfig, saveConfig, DEFAULT_TARGET_URL } from './config.js'
 import { detect, getAuthenticatedUrl } from './service.js'
 import { setupAutoUpdater } from './update.js'
+import { initOverlay, applyOverlayConfig, disposeOverlay } from './overlay.js'
 import { shortcutSupported, hasDesktopShortcut, createDesktopShortcut, ensureStartMenuShortcut } from './shortcut.js'
 import { APP_USER_MODEL_ID } from './aumid.js'
 import { setupCrashGuard } from './crashGuard.js'
@@ -154,6 +155,12 @@ if (!gotLock) {
       },
     })
 
+    // Task overlay (GPU-monitor style always-on-top session card). Its only
+    // input is the host plugin's state file — nothing to wire here beyond
+    // the main-window provider used by row clicks.
+    initOverlay({ getMainWindow: () => mainWindow })
+    applyOverlayConfig()
+
     // Backend bootstrap in background (never delays the window).
     bootstrapBackend().catch(() => {})
 
@@ -186,5 +193,6 @@ if (!gotLock) {
 
   app.on('before-quit', () => {
     app.isQuitting = true
+    disposeOverlay()
   })
 }

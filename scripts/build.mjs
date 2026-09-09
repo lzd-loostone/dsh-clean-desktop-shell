@@ -16,6 +16,7 @@ const pairs = [
   ['src/host/common.js', 'lib/common.js'],
   ['src/host/runtime.js', 'lib/runtime.js'],
   ['src/host/icon.js', 'lib/icon.js'],
+  ['src/host/session-events.js', 'lib/session-events.js'],
   ['src/client/client.js', 'lib/client.js'],
 ]
 for (const [src, dest] of pairs) {

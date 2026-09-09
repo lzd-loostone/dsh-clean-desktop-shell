@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'" />
+<title>DSH 任务悬浮窗</title>
+<style>
+  :root {
+    --alpha: 0.86;
+    --fs: 13px;
+    --card-bg: rgba(16, 19, 26, var(--alpha));
+    --card-border: rgba(255, 255, 255, 0.14);
+    --text: rgba(255, 255, 255, 0.95);
+    --text-dim: rgba(255, 255, 255, 0.55);
+    --row-hover: rgba(255, 255, 255, 0.09);
+    --track: rgba(255, 255, 255, 0.06);
+    --shadow: 0 10px 34px rgba(0, 0, 0, 0.45);
+  }
+  body.light {
+    --card-bg: rgba(246, 247, 250, var(--alpha));
+    --card-border: rgba(0, 0, 0, 0.10);
+    --text: rgba(20, 24, 33, 0.95);
+    --text-dim: rgba(20, 24, 33, 0.55);
+    --row-hover: rgba(0, 0, 0, 0.06);
+    --track: rgba(0, 0, 0, 0.05);
+    --shadow: 0 10px 30px rgba(0, 0, 0, 0.18);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { background: transparent; height: 100%; overflow: hidden; }
+  body {
+    font-family: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+    font-size: var(--fs);
+    color: var(--text);
+    user-select: none;
+    -webkit-font-smoothing: antialiased;
+  }
+  .card {
+    position: absolute; inset: 6px;
+    display: flex; flex-direction: column;
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 14px;
+    box-shadow: var(--shadow);
+    backdrop-filter: blur(22px) saturate(150%);
+    -webkit-backdrop-filter: blur(22px) saturate(150%);
+    overflow: hidden;
+  }
+  .head {
+    -webkit-app-region: drag;
+    display: flex; align-items: center; gap: 8px;
+    padding: 12px 14px 8px;
+    flex: none;
+  }
+  .head .title { font-size: calc(var(--fs) + 1.5px); font-weight: 600; letter-spacing: .2px; }
+  .head .hint { margin-left: auto; font-size: calc(var(--fs) - 2px); color: var(--text-dim); }
+  .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; background: #34d399; }
+  .dot.pulse { animation: pulse 1.6s ease-in-out infinite; }
+  @keyframes pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(96, 165, 250, .55); }
+    55% { box-shadow: 0 0 0 6px rgba(96, 165, 250, 0); }
+  }
+  .rows { display: flex; flex-direction: column; gap: 2px; padding: 2px 6px 8px; overflow: hidden; }
+  .row {
+    -webkit-app-region: no-drag;
+    display: flex; align-items: center; gap: 9px;
+    height: 40px; padding: 0 8px;
+    border-radius: 9px;
+    cursor: pointer;
+    transition: background-color .12s ease;
+  }
+  .row:hover { background: var(--row-hover); }
+  .row .badge {
+    flex: none; font-size: calc(var(--fs) - 2px); font-weight: 600;
+    padding: 2.5px 7px; border-radius: 6px; white-space: nowrap;
+    background: var(--track);
+  }
+  .row.running .badge { color: #60a5fa; }
+  .row.approval .badge { color: #fbbf24; }
+  .row.question .badge { color: #f472b6; }
+  .row.done .badge { color: var(--text-dim); }
+  .row .name {
+    flex: 1 1 auto; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .row.done .name { color: var(--text-dim); }
+  .row .time { flex: none; font-size: calc(var(--fs) - 2px); color: var(--text-dim); font-variant-numeric: tabular-nums; }
+  .row .unread { flex: none; width: 7px; height: 7px; border-radius: 50%; background: #e2e8f0; box-shadow: 0 0 6px rgba(226,232,240,.8); }
+  body.light .row .unread { background: #334155; box-shadow: none; }
+  .empty { padding: 10px 16px 16px; color: var(--text-dim); font-size: calc(var(--fs) - 1px); }
+  .more { padding: 0 16px 8px; color: var(--text-dim); font-size: calc(var(--fs) - 2px); }
+  .bar { height: 3px; flex: none; background: linear-gradient(90deg, #34d399, #60a5fa, #a78bfa, #f472b6); opacity: .85; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="bar"></div>
+    <div class="head">
+      <span class="dot" id="dot"></span>
+      <span class="title" id="title">DSH 空闲</span>
+      <span class="hint" id="hint"></span>
+    </div>
+    <div class="rows" id="rows"></div>
+    <div class="more" id="more" hidden></div>
+  </div>
+<script>
+  var display = null
+  var cfg = null
+
+  var KIND_LABEL = { running: '处理中', approval: '需要审批', question: '需要回答', done: '已完成' }
+  var MODE_TITLE = {
+    idle: 'DSH 空闲',
+    active: null, // computed
+    offline: '后端未连接',
+    missing: '未接入状态源'
+  }
+
+  function fmtDur(ms) {
+    if (ms < 0) ms = 0
+    var s = Math.floor(ms / 1000)
+    if (s < 60) return s + 's'
+    var m = Math.floor(s / 60)
+    if (m < 60) return m + 'm' + (s % 60 < 10 ? '0' : '') + (s % 60) + 's'
+    var h = Math.floor(m / 60)
+    return h + 'h' + (m % 60 < 10 ? '0' : '') + (m % 60) + 'm'
+  }
+
+  function render() {
+    var title = document.getElementById('title')
+    var dot = document.getElementById('dot')
+    var hint = document.getElementById('hint')
+    var rowsEl = document.getElementById('rows')
+    var moreEl = document.getElementById('more')
+    if (!display) return
+
+    dot.className = 'dot'
+    hint.textContent = ''
+    if (display.mode === 'idle') {
+      title.textContent = MODE_TITLE.idle
+      dot.style.background = '#34d399'
+    } else if (display.mode === 'active') {
+      title.textContent = display.runningCount + ' 个会话运行中'
+      dot.style.background = '#60a5fa'
+      dot.classList.add('pulse')
+    } else {
+      title.textContent = MODE_TITLE[display.mode] || MODE_TITLE.offline
+      dot.style.background = '#64748b'
+    }
+
+    rowsEl.innerHTML = ''
+    var list = display.rows || []
+    if (display.mode !== 'idle' && list.length === 0) {
+      var e = document.createElement('div')
+      e.className = 'empty'
+      e.textContent = display.mode === 'missing' ? '在 cordis 中启用桌面壳插件后显示' : '等待任务开始…'
+      rowsEl.appendChild(e)
+    }
+    for (var i = 0; i < list.length; i++) {
+      rowsEl.appendChild(makeRow(list[i]))
+    }
+    moreEl.hidden = !display.more
+    if (display.more) moreEl.textContent = '+ 还有 ' + display.more + ' 个会话…'
+  }
+
+  function makeRow(r) {
+    var el = document.createElement('div')
+    el.className = 'row ' + r.kind
+    el.title = r.name
+    var badge = document.createElement('span')
+    badge.className = 'badge'
+    badge.textContent = KIND_LABEL[r.kind] || r.kind
+    var name = document.createElement('span')
+    name.className = 'name'
+    name.textContent = r.name
+    var time = document.createElement('span')
+    time.className = 'time'
+    if (r.at && display.now) time.textContent = fmtDur(display.now - r.at)
+    el.appendChild(badge)
+    el.appendChild(name)
+    if (r.kind === 'done') {
+      var u = document.createElement('span')
+      u.className = 'unread'
+      el.appendChild(u)
+    }
+    el.appendChild(time)
+    el.addEventListener('click', function () { window.overlayAPI.rowClick(r.id) })
+    return el
+  }
+
+  function applyCfg() {
+    if (!cfg) return
+    document.documentElement.style.setProperty('--alpha', String(cfg.opacity))
+    document.documentElement.style.setProperty('--fs', (cfg.fontSize || 13) + 'px')
+    document.body.classList.toggle('light', cfg.theme === 'light')
+  }
+
+  window.overlayAPI.onState(function (d) { display = d; render() })
+  window.overlayAPI.onConfig(function (c) { cfg = c; applyCfg(); render() })
+  setInterval(function () {
+    if (display && display.now) { display.now = Date.now(); render() }
+  }, 1000)
+  window.overlayAPI.ready()
+</script>
+</body>
+</html>

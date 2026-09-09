@@ -7,7 +7,8 @@
 import { Tray, Menu, dialog, nativeImage } from 'electron'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { loadConfig, saveConfig } from './config.js'
+import { loadConfig, saveConfig, loadOverlay, saveOverlay } from './config.js'
+import { applyOverlayConfig, openOverlaySettings, resetOverlayPosition } from './overlay.js'
 import {
   getStatus,
   start,
@@ -86,6 +87,27 @@ export function refreshTrayMenu() {
           })
         }
       },
+    },
+    {
+      label: '任务悬浮窗',
+      submenu: [
+        {
+          label: '显示悬浮窗',
+          type: 'checkbox',
+          checked: loadOverlay().enabled,
+          click: (item) => {
+            saveOverlay({ enabled: item.checked })
+            applyOverlayConfig()
+          },
+        },
+        { label: '设置…', click: () => openOverlaySettings() },
+        {
+          label: '重置位置',
+          click: () => {
+            resetOverlayPosition()
+          },
+        },
+      ],
     },
     { type: 'separator' },
     { label: `后端：${label}`, enabled: false },
