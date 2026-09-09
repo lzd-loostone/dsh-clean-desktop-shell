@@ -33,7 +33,16 @@ const ROW_HEIGHT = 44
 const HEADER_HEIGHT = 52
 const PADDING = 18
 const MAX_ROWS = 6
-const WIDTH = 280
+const WIDTH = 280 // default width; overlay.size overrides after user resizing
+const MIN_W = 220
+const MAX_W = 640
+const MIN_H = 96
+const MAX_H = 720
+let resizeActive = false // corner-drag loop owns the height while true
+
+function clamp(v, lo, hi) {
+  return Math.min(Math.max(v, lo), hi)
+}
 
 function stateFile() {
   return join(process.env.DSH_HOME || join(homedir(), '.dsh'), 'desktop-shell-state.json')
@@ -99,16 +108,37 @@ function buildDisplay() {
     // Rows left are purely 'done' (nothing running) → keep the idle count
     // honest but still show the unread completions.
   }
-  const shown = rows.slice(0, MAX_ROWS)
-  return { mode, runningCount, rows: shown, more: Math.max(0, rows.length - shown.length), now }
+  return { mode, runningCount, rows, now }
 }
 
 function sendDisplay() {
   if (!overlayWin || overlayWin.isDestroyed()) return
-  const display = buildDisplay()
-  const height = Math.min(480, HEADER_HEIGHT + PADDING + Math.max(1, display.rows.length) * ROW_HEIGHT + (display.more ? 22 : 0))
+  const cfg = loadOverlay()
+  const userW = cfg.size && cfg.size.w ? clamp(cfg.size.w, MIN_W, MAX_W) : WIDTH
+  // A user-tallened window shows more rows instead of empty space.
+  const capacity = cfg.size && cfg.size.h
+    ? clamp(Math.floor((cfg.size.h - HEADER_HEIGHT - PADDING) / ROW_HEIGHT), 1, 12)
+    : MAX_ROWS
+  const full = buildDisplay()
+  const display = {
+    mode: full.mode,
+    runningCount: full.runningCount,
+    rows: full.rows.slice(0, capacity),
+    more: Math.max(0, full.rows.length - capacity),
+    now: full.now,
+  }
+  const b = overlayWin.getBounds()
+  const bounds = { x: b.x, y: b.y, width: userW }
+  if (resizeActive) {
+    bounds.height = b.height // mid-drag: the renderer loop sets the height
+  } else {
+    const contentH = HEADER_HEIGHT + PADDING + Math.max(1, display.rows.length) * ROW_HEIGHT + (display.more ? 22 : 0)
+    const wantH = Math.max(contentH, cfg.size && cfg.size.h ? cfg.size.h : 0)
+    const wa = screen.getDisplayNearestPoint({ x: b.x, y: b.y }).workArea
+    bounds.height = clamp(wantH, MIN_H, Math.min(MAX_H, wa.height))
+  }
   suppressMovedSave = true
-  overlayWin.setBounds({ width: WIDTH, height, x: overlayWin.getBounds().x, y: overlayWin.getBounds().y })
+  overlayWin.setBounds(bounds)
   suppressMovedSave = false
   if (!overlayWin.isVisible()) overlayWin.showInactive()
   overlayWin.webContents.send('overlay:state', display)
@@ -196,7 +226,12 @@ function createOverlayWindow() {
   })
   const cfg = loadOverlay()
   const pos = clampToVisuals(cfg.pos ? cfg.pos.x : defaultPosition().x, cfg.pos ? cfg.pos.y : defaultPosition().y)
-  overlayWin.setPosition(pos.x, pos.y)
+  overlayWin.setBounds({
+    x: pos.x,
+    y: pos.y,
+    width: cfg.size && cfg.size.w ? clamp(cfg.size.w, MIN_W, MAX_W) : WIDTH,
+    height: cfg.size && cfg.size.h ? clamp(cfg.size.h, MIN_H, MAX_H) : 120,
+  })
   overlayWin.showInactive()
   return overlayWin
 }
@@ -226,7 +261,42 @@ function registerIpc() {
       if (main.isMinimized()) main.restore()
       main.show()
       main.focus()
+      if (typeof id === 'string') {
+        // Hand the session id to the page; the client plugin routes it to
+        // the documented ctx.sessions.open() command (see src/client.js).
+        try { main.webContents.send('shell:goto-session', id) } catch { /* page not loaded yet */ }
+      }
     }
+    sendDisplay()
+  })
+
+  // Corner-drag resizing: the renderer grip sends incremental deltas; the
+  // final size persists as overlay.size (width also raises row capacity).
+  ipcMain.on('overlay:resize', (_e, d) => {
+    if (!overlayWin || overlayWin.isDestroyed()) return
+    const dw = d && Number.isFinite(d.dw) ? d.dw : 0
+    const dh = d && Number.isFinite(d.dh) ? d.dh : 0
+    resizeActive = true
+    const b = overlayWin.getBounds()
+    const wa = screen.getDisplayNearestPoint({ x: b.x, y: b.y }).workArea
+    overlayWin.setBounds({
+      x: b.x,
+      y: b.y,
+      width: clamp(b.width + dw, MIN_W, MAX_W),
+      height: clamp(b.height + dh, MIN_H, Math.min(MAX_H, wa.height)),
+    })
+  })
+
+  ipcMain.on('overlay:reset-size', () => {
+    saveOverlay({ size: null })
+    sendDisplay()
+  })
+
+  ipcMain.on('overlay:resize-end', () => {
+    resizeActive = false
+    if (!overlayWin || overlayWin.isDestroyed()) return
+    const b = overlayWin.getBounds()
+    saveOverlay({ size: { w: b.width, h: b.height } })
     sendDisplay()
   })
 
@@ -238,14 +308,15 @@ function registerIpc() {
   })
 
   ipcMain.on('overlay:settings-reset-pos', () => {
-    saveOverlay({ pos: null })
+    saveOverlay({ pos: null, size: null })
     if (overlayWin && !overlayWin.isDestroyed()) {
       const p = defaultPosition()
       suppressMovedSave = true
-      overlayWin.setPosition(p.x, p.y)
+      overlayWin.setBounds({ x: p.x, y: p.y, width: WIDTH, height: 120 })
       suppressMovedSave = false
     }
     sendConfig()
+    sendDisplay()
   })
 
   ipcMain.on('overlay:settings-close', () => {
@@ -308,15 +379,16 @@ export function openOverlaySettings() {
   return settingsWin
 }
 
-/** Reset the overlay position to the default corner (tray action). */
+/** Reset the overlay position AND size to defaults (tray action). */
 export function resetOverlayPosition() {
   if (overlayWin && !overlayWin.isDestroyed()) {
     const p = defaultPosition()
     suppressMovedSave = true
-    overlayWin.setPosition(p.x, p.y)
+    overlayWin.setBounds({ x: p.x, y: p.y, width: WIDTH, height: 120 })
     suppressMovedSave = false
   }
-  saveOverlay({ pos: null })
+  saveOverlay({ pos: null, size: null })
+  sendDisplay()
 }
 
 /** Release watchers (called on app quit). */

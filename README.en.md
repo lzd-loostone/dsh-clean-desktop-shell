@@ -235,8 +235,10 @@ npm run pack    # package NSIS (Win) / DMG (mac)
 - **New task overlay window**: an always-on-top desktop card (GPU-monitor style) showing live DSH session status —
   - "DSH idle" when nothing works; "N sessions running" plus per-session names when active;
   - each row is badged 处理中 / 需要审批 / 需要回答 / 已完成 (Running / Needs approval / Needs answer / Done); a finished task becomes unread (white dot) until you click its row, which clears the mark and brings the main window to the front;
-  - drag the header to move (position remembered; resettable from the tray), translucent frosted background with adjustable opacity (20%–100%), dark/light theme and font size (11–18px);
-  - controls live in tray → "任务悬浮窗" submenu (show toggle / Settings… / Reset position); changes apply instantly.
+  - drag the header to move (position remembered; resettable from the tray), **drag the bottom-right corner to resize** (a taller card shows more rows; double-click the grip to restore auto-size), translucent frosted background with adjustable opacity (20%–100%), dark/light theme and font size (11–18px);
+  - **clicking any row jumps the Web UI to that session** via the documented client command face (`ctx.sessions.open()`) and raises the main window; a 已完成 row is removed once clicked — the card only persistently shows running / needs-approval / needs-answer work;
+  - approval / answer / done rows **flash twice** when they appear, so a status change is impossible to miss;
+  - controls live in tray → "任务悬浮窗" submenu (show toggle / Settings… / Reset position & size); changes apply instantly.
 - Built solely on the documented cordis extension surface: `agent/created` / `agent/status` / `agent/disposed` subscriptions plus transparent observers on the `approval/request` and `user-questions/request` waterfalls (outcomes forwarded untouched). The plugin half atomically writes a snapshot to `~/.dsh/desktop-shell-state.json`; the Electron shell only reads that file — no port, no token, no internal transport. Heartbeat older than 12s shows "backend offline".
 - **dsh 0.1.2 launch-token support**: the shell loads the tokenized authUrl instead of the bare loopback root, fixing 401 blank pages after reload; backend restarts re-attach automatically (merged fix/dsh-0.1.2-index-token-auth).
 - Forked to `lzd-loostone/dsh-clean-desktop-shell`: auto-update sources (GitHub Releases / electron-updater publish) and package metadata now point at the fork, so self-updates no longer pull from upstream.

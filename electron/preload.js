@@ -23,6 +23,10 @@ contextBridge.exposeInMainWorld('shellAPI', {
   startBackend: () => ipcRenderer.send('shell:start-backend'),
   detectBackend: () => ipcRenderer.send('shell:detect-backend'),
   chooseBackendFolder: () => ipcRenderer.send('shell:choose-backend-folder'),
+  // Overlay row clicks arrive as 'shell:goto-session'; the page's client
+  // plugin (dsh-clean-desktop-shell client half) listens here and routes
+  // the id to the documented ctx.sessions.open() command.
+  onGotoSession: (cb) => ipcRenderer.on('shell:goto-session', (_e, id) => cb(id)),
 })
 
 window.addEventListener('DOMContentLoaded', () => {
