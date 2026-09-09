@@ -11,9 +11,9 @@
  *     ctx.sessions.open(id) (api/session-controller client surface:
  *     "Select a session as current").
  *
- * ctx.sessions is touched lazily — only when a click arrives, long after
- * every client service has installed — so no inject list is needed and
- * module-graph order cannot break the handler.
+ * The sessions service is DECLARED through exports.inject: the cordis
+ * client runtime refuses every undeclared ctx property read — laziness
+ * included ("cannot get property sessions without inject").
  *
  * Every stage echoes through the preload's gotoTrace channel into the
  * shell's userData/overlay-trace.log — a jump that does not happen is
@@ -25,6 +25,7 @@ window.__ModuleLoader__.load({
     var module = { exports: {} };
     var exports = module.exports;
     Object.defineProperty(exports, Symbol.toStringTag, { value: 'Module' });
+    exports.inject = ['sessions'];
     exports.apply = function (ctx) {
       var api = window.shellAPI;
       var say = function (m) { try { if (api && api.gotoTrace) api.gotoTrace(m) } catch (e) {} };
