@@ -89,7 +89,7 @@ let pos = null // free {x,y} window origin (edgeSnap=false)
 let docked = true // whale currently half-hidden inside the container
 let dragging = false
 let dragMoved = false
-let dragGrab = { gx: 0, gy: 0 }
+let dragLastPt = { x: 0, y: 0 }
 let dragStartPt = { x: 0, y: 0 }
 let bubbleOpen = false
 let openReason = null // 'hover' | 'auto'
@@ -608,25 +608,38 @@ function registerIpc() {
     if (bubbleOpen) closeBubble()
     setDocked(false) // whale fully visible while being carried
     const p = screen.getCursorScreenPoint()
-    const b = overlayWin.getBounds()
-    dragGrab = { gx: p.x - b.x, gy: p.y - b.y }
     dragStartPt = p
+    dragLastPt = { x: p.x, y: p.y }
   })
 
   ipcMain.on('overlay:orb-drag-tick', () => {
     if (!overlayWin || overlayWin.isDestroyed() || !dragging) return
     const p = screen.getCursorScreenPoint()
+    // DELTA + read-back (never absolute p-grab): an absolute mapping breaks
+    // when the window's DPI context flips mid-drag on a mixed-DPI desktop —
+    // DPI rounding then ratchets the window away from a still cursor, and
+    // the move→synthetic-pointermove→move loop turns it into a slow crawl.
+    const dx = p.x - dragLastPt.x
+    const dy = p.y - dragLastPt.y
+    if (!dx && !dy) return // cursor hasn't moved → don't touch the window at
+    dragLastPt = { x: p.x, y: p.y } // all; this also kills the feedback loop
     if (!dragMoved && Math.abs(p.x - dragStartPt.x) + Math.abs(p.y - dragStartPt.y) <= 4) return
     dragMoved = true
     const cfg = loadOverlay()
     const s = orbArea(cfg)
+    const b = overlayWin.getBounds()
     // Clamp against the CURSOR's display → dragging across the boundary
     // carries the whole window onto the neighbouring monitor (both ways).
     const wa = screen.getDisplayNearestPoint(p).workArea
-    overlayWin.setPosition(
-      clamp(p.x - dragGrab.gx, wa.x, Math.max(wa.x, wa.x + wa.width - s)),
-      clamp(p.y - dragGrab.gy, wa.y, Math.max(wa.y, wa.y + wa.height - s)),
-    )
+    const nx = clamp(b.x + dx, wa.x, Math.max(wa.x, wa.x + wa.width - b.width))
+    const ny = clamp(b.y + dy, wa.y, Math.max(wa.y, wa.y + wa.height - b.height))
+    if (b.width !== s || b.height !== s) {
+      // Windows re-scales the window on a DPI change; re-assert the
+      // canonical DIP size so the hit area can never drift from the whale.
+      overlayWin.setBounds({ x: nx, y: ny, width: s, height: s })
+    } else {
+      overlayWin.setPosition(nx, ny)
+    }
   })
 
   ipcMain.on('overlay:orb-drag-up', () => {
