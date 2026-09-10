@@ -115,8 +115,8 @@
 
   function render(d) {
     var card = document.getElementById('card')
-    card.classList.toggle('from-right', d.side !== 'left')
-    card.classList.toggle('from-left', d.side === 'left')
+    card.classList.toggle('from-right', d.bubbleSide === 'left')
+    card.classList.toggle('from-left', d.bubbleSide === 'right')
     if (d.orbSize) card.style.setProperty('--tailtop', Math.round(d.orbSize / 2) + 'px')
     var title = document.getElementById('title')
     var dot = document.getElementById('dot')
@@ -147,6 +147,13 @@
       requestAnimationFrame(function () { requestAnimationFrame(function () { card.classList.add('in') }) })
     }
     first = false
+    // Measure the real content height and report it — the main process
+    // formula is only the first-frame estimate, so the card never keeps
+    // dead space below the list.
+    var hh = 0
+    var kids = card.children
+    for (var k = 0; k < kids.length; k++) hh += kids[k].offsetHeight
+    try { window.bubbleAPI.size(Math.ceil(hh) + 2) } catch (err) {}
   }
 
   function makeRow(r) {

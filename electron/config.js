@@ -40,6 +40,11 @@ const DEFAULTS = {
     // bubbleTimeout: auto-collapse delay after a state-change pop-up.
     orbSize: 56,
     bubbleTimeout: 5000,
+    // edgeSnap: auto-dock to the nearest screen edge (whale half-hides
+    // inside the container at rest). false = free mode: stays where it was
+    // dropped, whale fully visible, no auto-collapse.
+    edgeSnap: true,
+    pos: null, // free-mode window origin {x,y}; null → derive from side/anchorY
   },
 }
 
@@ -73,6 +78,9 @@ export function loadConfig() {
       if (typeof src.anchorY === 'number' && Number.isFinite(src.anchorY)) o.anchorY = Math.round(src.anchorY)
       if (typeof src.orbSize === 'number' && src.orbSize >= 40 && src.orbSize <= 96) o.orbSize = Math.round(src.orbSize)
       if (typeof src.bubbleTimeout === 'number' && src.bubbleTimeout >= 2000 && src.bubbleTimeout <= 20000) o.bubbleTimeout = Math.round(src.bubbleTimeout)
+      if (typeof src.edgeSnap === 'boolean') o.edgeSnap = src.edgeSnap
+      if (src.pos === null) o.pos = null
+      else if (src.pos && typeof src.pos === 'object' && Number.isFinite(src.pos.x) && Number.isFinite(src.pos.y)) o.pos = { x: Math.round(src.pos.x), y: Math.round(src.pos.y) }
       cached.overlay = o
     }
   } catch {

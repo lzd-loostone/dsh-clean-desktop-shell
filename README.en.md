@@ -231,6 +231,13 @@ npm run pack    # package NSIS (Win) / DMG (mac)
 
 ## Changelog
 
+### 0.3.1
+- **Containerized docking**: the orb window now always stays fully inside one display's work area — the half-hidden look is made by sliding the whale *inside* the container (CSS translate + clipping) instead of hanging the window past the screen edge. Fixes the half-orb leaking onto the neighbouring monitor at inner edges and the bubble opening on the wrong screen (window centers no longer straddle the boundary, so display detection is stable). Hover now covers the whole container — touching anywhere near the edge wakes the orb.
+- **Drag DPI fix**: dragging is driven by the main-process cursor (`getCursorScreenPoint`, the same DIP space as `setPosition`) with zero renderer coordinate math — drag now tracks the pointer exactly at 125%/150% scaling and mixed-DPI setups; the context menu is positioned from the cursor too.
+- **Cross-monitor dragging**: drag clamping follows the *cursor's* display, so the orb can be dragged onto any monitor and back (previously, once it entered the second screen it could never return).
+- **Auto-dock toggle**: a new "自动贴边" (auto edge-snap) switch in settings, default on. On = previous behaviour (half-hide + snap to the nearest edge); off = free mode — the orb stops where you drop it, stays fully visible, never auto-collapses, and the bubble prefers the right side (flips left only when it cannot fit); the free position persists across restarts.
+- **Measured bubble height**: the card page now measures its own content and reports the exact height back, eliminating the ~half-row dead strip below the session list (the old fixed formula had drifted from the rendered CSS); the "+N more sessions" line is no longer clipped.
+
 ### 0.3.0
 - **Task orb, three-window architecture**: the whale disc docks half-hidden at the screen's left/right edge (circle center on the edge line, zero gap); hover slides it out and opens the session bubble (orb ↔ bubble act as one hover zone with a 350ms relay), collapsing when you leave; drag follows the pointer and snaps back to the nearest horizontal edge with a bounce on release.
 - **Status at a glance**: a conic light sweeps the ring while tasks run and a count badge shows (from 1 up); an attention dot marks needs-approval (amber) / needs-answer (pink) / done-unread (white) — badge and dot flip to the visible half depending on the docked edge; the whole orb greys out when the backend is stale.

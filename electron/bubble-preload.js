@@ -10,5 +10,6 @@ contextBridge.exposeInMainWorld('bubbleAPI', {
   hover: (v) => ipcRenderer.send('bubble:hover', !!v),
   rowClick: (id) => ipcRenderer.send('bubble:row', id),
   blankClick: () => ipcRenderer.send('bubble:blank'),
+  size: (h) => ipcRenderer.send('bubble:size', h),
   ready: () => ipcRenderer.send('bubble:ready'),
 })

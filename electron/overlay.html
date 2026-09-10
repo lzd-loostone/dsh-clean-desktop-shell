@@ -8,6 +8,7 @@
   :root {
     --alpha: 0.86;
     --orb: 56px;
+    --shift: 0px;
     --orb-face: linear-gradient(145deg, rgba(30, 36, 50, var(--alpha)), rgba(14, 17, 24, var(--alpha)));
     --orb-stroke: rgba(255, 255, 255, 0.16);
     --badge-bg: #2563eb;
@@ -20,7 +21,18 @@
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html, body { background: transparent; height: 100%; overflow: hidden; }
   body { user-select: none; -webkit-font-smoothing: antialiased; }
-  .stage { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; }
+  /* The container is the window itself (s×s, always fully on one display).
+     The whale slides inside it — docked half hides behind the window edge,
+     which visually reads as "half past the screen border" without the
+     window ever crossing a monitor boundary. */
+  .stage { position: relative; width: 100%; height: 100%; }
+  .shift {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    transform: translateX(var(--shift));
+    transition: transform .16s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  body.dragging .shift { transition: none; }
   .orb {
     position: relative;
     width: var(--orb); height: var(--orb);
@@ -68,6 +80,7 @@
     pointer-events: none;
   }
   .orb.active .badge { display: block; }
+  /* Docked right → the right half is clipped → keep badges on the visible side. */
   .stage.edge-right .badge { right: auto; left: -4px; }
   .stage.edge-right .att { right: auto; left: 0; }
   .att {
@@ -91,19 +104,31 @@
 </head>
 <body>
   <div class="stage" id="stage">
-    <div class="orb" id="orb">
-      <div class="ring"></div>
-      <img class="whale" src="../build/icon.png" alt="" draggable="false" />
-      <div class="badge" id="badge">0</div>
-      <div class="att" id="att"></div>
+    <div class="shift" id="shift">
+      <div class="orb" id="orb">
+        <div class="ring"></div>
+        <img class="whale" src="../build/icon.png" alt="" draggable="false" />
+        <div class="badge" id="badge">0</div>
+        <div class="att" id="att"></div>
+      </div>
     </div>
   </div>
 <script>
   var cfg = null
+  var st = { side: 'right', docked: true, edgeSnap: true }
+
+  function applyShift() {
+    var s = (cfg ? (cfg.orbSize || 56) : 56) + 16 // container size = orb + 2× margin
+    var v = 0
+    if (st.edgeSnap && st.docked) v = st.side === 'right' ? Math.round(s / 2) : -Math.round(s / 2)
+    document.documentElement.style.setProperty('--shift', v + 'px')
+  }
 
   function render(d) {
+    st = d
     var orb = document.getElementById('orb')
-    document.getElementById('stage').classList.toggle('edge-right', d.side === 'right')
+    document.getElementById('stage').classList.toggle('edge-right', !!d.edgeSnap && !!d.docked && d.side === 'right')
+    applyShift()
     orb.className = 'orb' + (d.mode === 'active' ? ' active' : d.mode === 'idle' ? '' : ' ' + d.mode)
     document.getElementById('badge').textContent = String(d.runningCount || 0)
     var att = document.getElementById('att')
@@ -121,41 +146,34 @@
     document.documentElement.style.setProperty('--alpha', String(cfg.opacity))
     document.documentElement.style.setProperty('--orb', (cfg.orbSize || 56) + 'px')
     document.body.classList.toggle('light', cfg.theme === 'light')
+    applyShift()
   }
 
-  // Drag deltas MUST use screen coords: clientX shifts when the window
-  // moves under the pointer and feeds the move back into the delta.
+  // Cursor-driven drag: the renderer sends NO coordinates at all — the main
+  // process reads the DIP cursor itself (immune to per-monitor DPI scaling).
   ;(function () {
     var orb = document.getElementById('orb')
     orb.addEventListener('pointerdown', function (e) {
       if (e.button !== 0) return
       e.preventDefault()
       try { orb.setPointerCapture(e.pointerId) } catch (err) {}
-      var sx = e.screenX, sy = e.screenY
-      var lx = sx, ly = sy, dx = 0, dy = 0, moved = false, raf = 0
-      function flush() {
+      document.body.classList.add('dragging')
+      window.overlayAPI.dragStart()
+      var raf = 0
+      function tick() {
         raf = 0
-        if (!dx && !dy) return
-        window.overlayAPI.drag(dx, dy)
-        dx = 0; dy = 0
+        window.overlayAPI.dragTick()
       }
-      function move(ev) {
-        dx += ev.screenX - lx; dy += ev.screenY - ly
-        lx = ev.screenX; ly = ev.screenY
-        if (!moved && Math.abs(ev.screenX - sx) + Math.abs(ev.screenY - sy) > 4) moved = true
-        if (moved && !raf) raf = requestAnimationFrame(flush)
+      function move() {
+        if (!raf) raf = requestAnimationFrame(tick)
       }
       function up() {
         orb.removeEventListener('pointermove', move)
         orb.removeEventListener('pointerup', up)
         orb.removeEventListener('pointercancel', up)
         if (raf) cancelAnimationFrame(raf)
-        if (moved) {
-          flush()
-          window.overlayAPI.dragEnd()
-        } else {
-          window.overlayAPI.click()
-        }
+        document.body.classList.remove('dragging')
+        window.overlayAPI.dragUp()
       }
       orb.addEventListener('pointermove', move)
       orb.addEventListener('pointerup', up)
@@ -163,10 +181,12 @@
     })
     orb.addEventListener('contextmenu', function (e) {
       e.preventDefault()
-      window.overlayAPI.context(e.screenX, e.screenY)
+      window.overlayAPI.context()
     })
   })()
 
+  // Hover is bound to the whole container: the clipped half still reacts, so
+  // touching anywhere near the docked edge wakes the whale up.
   var stage = document.getElementById('stage')
   stage.addEventListener('mouseenter', function () { window.overlayAPI.hover(true) })
   stage.addEventListener('mouseleave', function () { window.overlayAPI.hover(false) })

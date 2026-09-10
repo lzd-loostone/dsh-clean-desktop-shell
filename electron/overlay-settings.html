@@ -140,6 +140,10 @@
       </div>
 
       <div class="sec">外观与行为</div>
+      <div class="row">
+        <span>自动贴边</span>
+        <label class="switch"><input type="checkbox" id="edgeSnap" /><span class="slider"></span></label>
+      </div>
       <div class="ctrl">
         <div class="cap"><span class="name">圆圈大小</span><span class="val" id="orbSize-v"></span></div>
         <input type="range" id="orbSize" min="40" max="96" step="2" />
@@ -165,7 +169,7 @@
     </main>
   </div>
 <script>
-  var cur = { theme: 'dark', opacity: 0.86, fontSize: 13, enabled: true, orbSize: 56, bubbleTimeout: 5000 }
+  var cur = { theme: 'dark', opacity: 0.86, fontSize: 13, enabled: true, orbSize: 56, bubbleTimeout: 5000, edgeSnap: true }
   var t = null
   function push(patch) {
     cur = Object.assign(cur, patch)
@@ -179,6 +183,7 @@
   }
   function paint() {
     document.getElementById('enabled').checked = !!cur.enabled
+    document.getElementById('edgeSnap').checked = cur.edgeSnap !== false
     var op = document.getElementById('opacity'); op.value = Math.round(cur.opacity * 100); fill(op)
     document.getElementById('opacity-v').textContent = Math.round(cur.opacity * 100) + '%'
     var fs = document.getElementById('fontSize'); fs.value = cur.fontSize; fill(fs)
@@ -196,6 +201,7 @@
     window.settingsAPI.size(Math.ceil(h))
   }
   document.getElementById('enabled').addEventListener('change', function (e) { push({ enabled: e.target.checked }) })
+  document.getElementById('edgeSnap').addEventListener('change', function (e) { push({ edgeSnap: e.target.checked }) })
   document.getElementById('opacity').addEventListener('input', function (e) { fill(e.target); push({ opacity: Number(e.target.value) / 100 }) })
   document.getElementById('fontSize').addEventListener('input', function (e) { fill(e.target); push({ fontSize: Number(e.target.value) }) })
   document.getElementById('orbSize').addEventListener('input', function (e) { fill(e.target); push({ orbSize: Number(e.target.value) }) })
