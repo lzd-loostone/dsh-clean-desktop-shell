@@ -89,7 +89,6 @@ let bubbleWin = null
 let menuWin = null
 let settingsWin = null
 let detailWin = null // approval hover card (side-mounted beside the bubble)
-let detailReady = false // renderer finished its approval:ready handshake
 let getMainWindow = null
 let watching = false
 let ipcReady = false
@@ -454,7 +453,6 @@ function detailHeightFor() {
 
 function ensureApprovalWindow() {
   if (detailWin && !detailWin.isDestroyed()) return detailWin
-  detailReady = false
   detailWin = new DshWindow({
     ...winBase(),
     width: APPROVAL_W,
@@ -466,20 +464,6 @@ function ensureApprovalWindow() {
   })
   detailWin.setAlwaysOnTop(true, 'screen-saver')
   detailWin.loadFile(APPROVAL_PAGE)
-  detailWin.webContents.on('console-message', (_e, level, message) => trace('detail:[' + level + '] ' + String(message).slice(0, 180)))
-  detailWin.webContents.on('did-finish-load', () => trace('detail did-finish-load'))
-  detailWin.webContents.on('did-fail-load', (_e, code, desc) => trace('detail did-FAIL-load ' + code + ' ' + desc))
-  detailWin.once('ready-to-show', () => trace('detail ready-to-show'))
-  // Watchdog: if the renderer never completes the ready handshake, dump its
-  // self-reported state so a stalled load is visible in the trace.
-  detailWin.webContents.on('did-finish-load', () => {
-    setTimeout(() => {
-      if (!detailWin || detailWin.isDestroyed() || detailReady) return
-      detailWin.webContents.executeJavaScript("(function(){var c=document.getElementById('card');return 'readyState=' + document.readyState + ' card=' + (c ? getComputedStyle(c).display + '/' + getComputedStyle(c).opacity + '/' + c.offsetHeight + 'px' : 'MISSING') + ' api=' + (typeof window.approvalAPI)})()")
-        .then((s) => trace('detail-stuck probe: ' + s))
-        .catch((e) => trace('detail-stuck probe err: ' + e.message))
-    }, 1200)
-  })
   detailWin.on('closed', () => { detailWin = null; detailOpen = false; detailSessionId = null })
   return detailWin
 }
@@ -494,7 +478,6 @@ function pushDetail(full) {
   const base = lastBubRect || bubbleBounds(loadOverlay(), buildDisplay())
   const bounds = computeApprovalBounds(base, detailHeightFor(), waFor(), lastBubSide)
   detailWin.setBounds(bounds)
-  trace('detail-bounds ' + JSON.stringify(detailWin.getBounds()) + ' want=' + JSON.stringify(bounds))
   const src = wantQuestion ? row.q : row.ap
   const payload = {
     kind: wantQuestion ? 'question' : 'approval',
@@ -515,10 +498,6 @@ function pushDetail(full) {
   }
   detailWin.webContents.send('approval:state', payload)
   if (!detailWin.isVisible()) detailWin.showInactive()
-  trace('detail-show vis=' + detailWin.isVisible() + ' loading=' + detailWin.webContents.isLoadingMainFrame())
-  setTimeout(() => {
-    try { trace('detail-after vis=' + detailWin.isVisible() + ' op=' + detailWin.getOpacity() + ' b=' + JSON.stringify(detailWin.getBounds())) } catch { /* gone */ }
-  }, 400)
 }
 
 function openDetail(id) {
@@ -794,7 +773,7 @@ function registerIpc() {
     else scheduleDetailHide()
   })
 
-  ipcMain.on('approval:ready', () => { detailReady = true; trace('detail-ready recv'); sendConfig(); if (detailOpen) pushDetail() })
+  ipcMain.on('approval:ready', () => { sendConfig(); if (detailOpen) pushDetail() })
 
   // The card's buttons: allow/reject answer the live pending approval in
   // the web page (client half calls PendingApproval.answer — equivalent to
