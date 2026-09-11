@@ -18,6 +18,16 @@
 import { writeFileSync, renameSync, rmSync, mkdirSync } from 'node:fs'
 import { basename, dirname } from 'node:path'
 import { stateFilePath } from './common.js'
+import {
+  pushApprovalDetail,
+  removeApprovalDetail,
+  approvalDetailsForWrite,
+} from './approval-details.js'
+import {
+  captureQuestionBatch,
+  removeQuestionBatch,
+  questionBatchesForWrite,
+} from './question-details.js'
 
 // Refresh the timestamp even when nothing changed, so the shell can tell
 // "backend alive but idle" apart from "backend gone" (file goes stale).
@@ -26,7 +36,7 @@ const HEARTBEAT_MS = 5000
 const COALESCE_MS = 150
 
 export function startSessionEvents(ctx) {
-  /** @type {Map<string, {running:boolean, approvals:number, questions:number, startedAt:number|null, finishedAt:number|null, lastChangeAt:number}>} */
+  /** @type {Map<string, {running:boolean, approvals:number, questions:number, approvalDetails:object[], questionDetails:object[], startedAt:number|null, finishedAt:number|null, lastChangeAt:number}>} */
   const entries = new Map()
   let heartbeat = null
   let flushTimer = null
@@ -35,7 +45,7 @@ export function startSessionEvents(ctx) {
   function entryOf(id) {
     let e = entries.get(id)
     if (!e) {
-      e = { running: false, approvals: 0, questions: 0, startedAt: null, finishedAt: null, lastChangeAt: Date.now() }
+      e = { running: false, approvals: 0, questions: 0, approvalDetails: [], questionDetails: [], startedAt: null, finishedAt: null, lastChangeAt: Date.now() }
       entries.set(id, e)
     }
     return e
@@ -89,6 +99,13 @@ export function startSessionEvents(ctx) {
         running: e.running,
         approvals: e.approvals,
         questions: e.questions,
+        // Ordered detail rows for the bubble's approval hover card; first
+        // entry is what the web composer shows as effective. Empty array is
+        // always written so the shell never guesses at a missing key.
+        pendingApprovals: approvalDetailsForWrite(e.approvalDetails),
+        // Ordered question batches (first = effective); pages carry the
+        // exact ids/labels the bubble needs to echo a complete answer.
+        pendingQuestions: questionBatchesForWrite(e.questionDetails),
         startedAt: e.startedAt,
         finishedAt: e.finishedAt,
         lastChangeAt: e.lastChangeAt,
@@ -136,7 +153,10 @@ export function startSessionEvents(ctx) {
   })
 
   // --- waterfall observers (count only; always forward) -------------------
-  function observeWaterfall(event, field) {
+  // Third argument optionally tracks per-request details alongside the count
+  // (approvals show toolName/reason in the bubble; questions stay count-only
+  // this round). The handle pairs add/remove by object identity.
+  function observeWaterfall(event, field, detailHooks) {
     ctx.on(
       event,
       (request, next) => {
@@ -145,9 +165,11 @@ export function startSessionEvents(ctx) {
         const e = entryOf(id)
         e[field] += 1
         e.lastChangeAt = Date.now()
+        const handle = detailHooks ? detailHooks.track(e, request) : null
         schedule()
         const settle = () => {
           e[field] = Math.max(0, e[field] - 1)
+          if (handle) detailHooks.untrack(e, handle)
           e.lastChangeAt = Date.now()
           schedule()
         }
@@ -166,8 +188,14 @@ export function startSessionEvents(ctx) {
     )
   }
 
-  observeWaterfall('approval/request', 'approvals')
-  observeWaterfall('user-questions/request', 'questions')
+  observeWaterfall('approval/request', 'approvals', {
+    track: (e, request) => pushApprovalDetail(e.approvalDetails, request, Date.now()),
+    untrack: (e, handle) => removeApprovalDetail(e.approvalDetails, handle),
+  })
+  observeWaterfall('user-questions/request', 'questions', {
+    track: (e, request) => captureQuestionBatch(e.questionDetails, request, Date.now()),
+    untrack: (e, handle) => removeQuestionBatch(e.questionDetails, handle),
+  })
 
   heartbeat = setInterval(writeNow, HEARTBEAT_MS)
   if (typeof heartbeat.unref === 'function') heartbeat.unref()

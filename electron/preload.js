@@ -33,6 +33,23 @@ contextBridge.exposeInMainWorld('shellAPI', {
       cb(id)
     })
   },
+  // The bubble's approval card asks for a decision; the page's client
+  // plugin answers the live PendingApproval (see src/client/client.js).
+  onApproveSession: (cb) => {
+    ipcRenderer.on('shell:approve-session', (_e, v) => {
+      try { ipcRenderer.send('shell:trace', 'preload recv approve ' + (v && v.decision) + ' ' + (v && v.sessionId)) } catch (e) {}
+      cb(v)
+    })
+  },
+  // The bubble's question card submits a whole batch of answers; the page's
+  // client plugin validates them against the live PendingQuestion (see
+  // src/client/client.js) before calling answer().
+  onAnswerQuestion: (cb) => {
+    ipcRenderer.on('shell:answer-question', (_e, v) => {
+      try { ipcRenderer.send('shell:trace', 'preload recv answer x' + (v && v.answers && v.answers.length) + ' ' + (v && v.sessionId)) } catch (e) {}
+      cb(v)
+    })
+  },
   // Echo channel for the client plugin's deep-link tracing.
   gotoTrace: (msg) => { try { ipcRenderer.send('shell:trace', 'client ' + msg) } catch (e) {} },
 })

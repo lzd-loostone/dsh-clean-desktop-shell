@@ -8,7 +8,7 @@
  *
  * The main window is a pure shell — all backend controls live in the tray.
  */
-import { app, BrowserWindow, dialog, nativeImage } from 'electron'
+import { app, BrowserWindow, dialog, Menu, nativeImage } from 'electron'
 import { fileURLToPath } from 'node:url'
 import { createMainWindow, reloadWindow } from './window.js'
 import { createTray, refreshTrayMenu } from './tray.js'
@@ -134,6 +134,13 @@ if (!gotLock) {
   }
 
   app.whenReady().then(async () => {
+    // No File/Edit/View application menu anywhere (the stock menu was also
+    // what popped up over Electron's default child windows). Windows/Linux:
+    // gone entirely — clipboard shortcuts keep working because Chromium
+    // handles them natively in editable fields and selections. macOS keeps
+    // its system menu by convention (the app menu lives outside our windows
+    // there and carries the standard roles).
+    if (!isMac) Menu.setApplicationMenu(null)
     await createWindow()
     tray = createTray({
       onShow: () => {

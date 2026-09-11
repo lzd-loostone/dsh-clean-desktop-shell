@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url'
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)))
 // CJS files relative to electron/ — parsed as CommonJS despite the ESM package.
-const CJS_FILES = new Set(['preload.js', 'progress-preload.js', 'overlay-preload.js', 'overlay-settings-preload.js', 'bubble-preload.js', 'menu-preload.js'])
+const CJS_FILES = new Set(['preload.js', 'progress-preload.js', 'overlay-preload.js', 'overlay-settings-preload.js', 'bubble-preload.js', 'menu-preload.js', 'link-preload.js', 'approval-preload.js'])
 
 function listJs(dir) {
   return readdirSync(join(root, dir)).filter((f) => f.endsWith('.js'))

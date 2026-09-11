@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'" />
+<title>DSH 链接</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+[hidden] { display: none !important; }
+  html, body { height: 100%; overflow: hidden; background: #fff; }
+  body {
+    display: flex; flex-direction: column;
+    font-family: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+    font-size: 13px; color: #1c2330; user-select: none; -webkit-font-smoothing: antialiased;
+  }
+  /* ---- bookmark tabs, inline in the toolbar row (shown when 2+ tabs) ---- */
+  .tabs {
+    flex: 1 1 auto; min-width: 0; display: none; align-items: center; gap: 4px;
+    height: 100%; padding: 0 4px;
+    -webkit-app-region: drag; overflow-x: auto; overflow-y: hidden;
+    scrollbar-width: thin;
+  }
+  .tabs.multi { display: flex; }
+  .tabs.multi ~ .spacer { display: none; }
+  .tabs::-webkit-scrollbar { height: 4px; } .tabs::-webkit-scrollbar-thumb { background: #c3c7d1; border-radius: 2px; }
+  .tab {
+    -webkit-app-region: no-drag; flex: 0 1 150px; min-width: 64px;
+    display: flex; align-items: center; gap: 6px; height: 26px; padding: 0 5px 0 7px;
+    border-radius: 7px; background: rgba(28, 35, 48, .055); cursor: pointer; color: #5b6170;
+  }
+  .tab:hover { background: rgba(28, 35, 48, .1); }
+  .tab.active { background: #fff; color: #1c2330; box-shadow: 0 1px 3px rgba(0,0,0,.14), 0 0 0 1px rgba(0,0,0,.04); }
+  .tab .fav {
+    flex: none; width: 15px; height: 15px; border-radius: 50%; color: #fff; font-size: 9px;
+    display: flex; align-items: center; justify-content: center; font-weight: 700;
+  }
+  .tab .ttl { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tab .x {
+    flex: none; width: 17px; height: 17px; border: 0; border-radius: 5px; background: transparent;
+    color: inherit; cursor: pointer; display: none; align-items: center; justify-content: center;
+  }
+  .tab:hover .x, .tab.active .x { display: flex; }
+  .tab .x:hover { background: rgba(0,0,0,.12); }
+  /* ---- icon toolbar ---- */
+  .tb {
+    flex: none; display: flex; align-items: center; gap: 2px;
+    height: 38px; padding: 0 4px 0 8px; background: #f2f3f6; border-bottom: 1px solid #e1e3ea;
+    -webkit-app-region: drag;
+  }
+  .tb button {
+    -webkit-app-region: no-drag; flex: none; width: 30px; height: 28px; border: 0; border-radius: 7px;
+    background: transparent; color: #3c4250; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .tb button:hover { background: #e0e2e9; color: #10151f; }
+  .tb button:disabled { opacity: .32; cursor: default; background: transparent; }
+  .tb button:disabled:hover { background: transparent; }
+  .tb svg { width: 15px; height: 15px; }
+  .tb .spacer { flex: 1 1 auto; }
+  .tb .sep { flex: none; width: 1px; height: 17px; background: #d6d9e1; margin: 0 5px; }
+  .tb .close:hover { background: #e81123; color: #fff; }
+  .tb .ok { color: #188038; }
+  #rel svg { transition: none; }
+  #rel.spin svg { animation: rot .75s linear infinite; }
+  @keyframes rot { to { transform: rotate(360deg); } }
+  /* ---- fail strip ---- */
+  .fail {
+    flex: none; display: none; align-items: center; gap: 10px;
+    padding: 7px 14px; background: #fff4e5; border-bottom: 1px solid #f3dfb8; color: #7a5200;
+  }
+  .fail.show { display: flex; }
+  .fail button { margin-left: auto; -webkit-app-region: no-drag; font: inherit; cursor: pointer; border: 1px solid #e4c98d; border-radius: 6px; background: #fff; color: #7a5200; padding: 2px 9px; }
+  /* ---- stacked views: inactive hidden by visibility (webview-safe) ---- */
+  .views { flex: 1 1 auto; position: relative; }
+  .views webview { position: absolute; inset: 0; width: 100%; height: 100%; background: #fff; visibility: hidden; }
+  .views webview.alive { visibility: visible; z-index: 1; }
+</style>
+</head>
+<body>
+  <div class="tb" id="tb">
+    <button id="bBack" title="后退" disabled><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3L5.5 8 10 13"/></svg></button>
+    <button id="bFwd" title="前进" disabled><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3l4.5 5L6 13"/></svg></button>
+    <button id="rel" title="刷新"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 1.8v2.9h-2.9"/></svg></button>
+    <div class="tabs" id="tabs"></div>
+    <span class="spacer"></span>
+    <button id="bCopy" title="复制链接"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5.6" y="5.6" width="8" height="8" rx="1.6"/><path d="M10.4 3.4H3.9a1.5 1.5 0 0 0-1.5 1.5v6.5"/></svg></button>
+    <button id="bExt" title="在浏览器中打开"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9.3 2.8h4v4M13.3 2.8L7.6 8.5"/><path d="M11.6 9.6v2.8a1.6 1.6 0 0 1-1.6 1.6H4a1.6 1.6 0 0 1-1.6-1.6V6.4A1.6 1.6 0 0 1 4 4.8h2.7"/></svg></button>
+    <span class="sep"></span>
+    <button id="bMin" title="最小化"><svg viewBox="0 0 16 16" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3.6 8h8.8"/></svg></button>
+    <button id="bMax" title="最大化 / 还原"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3.4" y="3.4" width="9.2" height="9.2" rx="1.4"/></svg></button>
+    <button id="bClose" class="close" title="关闭"><svg viewBox="0 0 16 16" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4.2 4.2l7.6 7.6M11.8 4.2l-7.6 7.6"/></svg></button>
+  </div>
+  <div class="fail" id="fail"><span id="failMsg">页面加载失败</span><button id="failExt">去浏览器打开</button></div>
+  <div class="views" id="views"></div>
+<script>
+  var tabsEl = document.getElementById('tabs')
+  var viewsEl = document.getElementById('views')
+  var failEl = document.getElementById('fail')
+  var bBack = document.getElementById('bBack'), bFwd = document.getElementById('bFwd'), rel = document.getElementById('rel')
+  var tabs = []          // { id, view, tabEl, startUrl, title, failed }
+  var active = null
+  var seq = 0
+
+  function hueOf(s) { var h = 0; for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) % 360; return h }
+
+  function activeView() { return active && active.view }
+
+  function urlOf(t) { try { return t.view.getURL() || t.startUrl } catch (e) { return t.startUrl } }
+
+  function setActive(t) {
+    active = t
+    for (var i = 0; i < tabs.length; i++) {
+      var x = tabs[i]
+      x.tabEl.classList.toggle('active', x === t)
+      x.view.classList.toggle('alive', x === t)
+    }
+    failEl.classList.toggle('show', !!t.failed)
+    updateNav()
+  }
+
+  function updateNav() {
+    var v = activeView()
+    var ok = !!v
+    var back = false, fwd = false
+    if (ok) { try { back = v.canGoBack(); fwd = v.canGoForward() } catch (e) {} }
+    bBack.disabled = !back
+    bFwd.disabled = !fwd
+  }
+
+  function makeTab(url) {
+    var id = ++seq
+    var t = { id: id, startUrl: url, failed: false, title: '' }
+    var el = document.createElement('div')
+    el.className = 'tab'
+    var fav = document.createElement('span')
+    fav.className = 'fav'
+    fav.style.background = 'hsl(' + hueOf(url) + ',52%,48%)'
+    var ttl = document.createElement('span')
+    ttl.className = 'ttl'
+    var x = document.createElement('button')
+    x.className = 'x'
+    x.title = '关闭标签页'
+    x.innerHTML = '<svg width="9" height="9" viewBox="0 0 16 16" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg>'
+    el.appendChild(fav); el.appendChild(ttl); el.appendChild(x)
+    el.title = url
+    el.addEventListener('click', function (ev) { if (ev.target === x || x.contains(ev.target)) return; setActive(t) })
+    el.addEventListener('mousedown', function (ev) { if (ev.button === 1) { ev.preventDefault(); closeTab(t) } })
+    el.addEventListener('dblclick', function (ev) { ev.stopPropagation() }) // don't let the toolbar max out under a tab
+    x.addEventListener('click', function (ev) { ev.stopPropagation(); closeTab(t) })
+
+    var v = document.createElement('webview')
+    v.setAttribute('partition', 'persist:dsh-shell-links')
+    v.setAttribute('webpreferences', 'sandbox=yes')
+    v.setAttribute('allowpopups', '')
+    v.setAttribute('src', url)
+    v.addEventListener('page-title-updated', function (e) { t.title = e.title || ''; ttl.textContent = e.title || hostOf(url); el.title = e.title || url })
+    v.addEventListener('did-navigate', function () {
+      t.failed = false
+      if (!t.title) ttl.textContent = hostOf(urlOf(t))
+      if (t === active) { failEl.classList.remove('show'); updateNav() }
+    })
+    v.addEventListener('did-navigate-in-page', function () { if (t === active) updateNav() })
+    v.addEventListener('did-start-loading', function () { if (t === active) rel.classList.add('spin') })
+    v.addEventListener('did-stop-loading', function () {
+      rel.classList.remove('spin')
+      if (t === active) updateNav()
+    })
+    v.addEventListener('did-fail-load', function (e) {
+      if (e.errorCode === -3) return
+      t.failed = true
+      if (t === active) {
+        document.getElementById('failMsg').textContent = '页面加载失败（' + e.errorDescription + '）'
+        failEl.classList.add('show')
+      }
+    })
+    v.addEventListener('new-window', function (e) {
+      // guest target=_blank → open as our own tab (blocked by default otherwise)
+      try { e.preventDefault && e.preventDefault() } catch (err) {}
+      openUrl(e.url)
+    })
+    viewsEl.appendChild(v)
+    tabsEl.appendChild(el)
+    ttl.textContent = hostOf(url)
+    tabs.push(t)
+    t.view = v
+    t.tabEl = el
+    return t
+  }
+
+  function hostOf(u) { try { return new URL(u).host } catch (e) { return '链接' } }
+
+  function closeTab(t) {
+    var i = tabs.indexOf(t)
+    if (i < 0) return
+    tabs.splice(i, 1)
+    t.tabEl.remove()
+    try { t.view.stop && t.view.stop() } catch (e) {}
+    t.view.remove()
+    if (tabs.length === 0) { window.linkAPI.winCtl('close'); return }
+    if (t === active) setActive(tabs[Math.min(i, tabs.length - 1)])
+    syncTabBar()
+  }
+
+  function syncTabBar() { tabsEl.classList.toggle('multi', tabs.length > 1) }
+
+  function openUrl(url) {
+    if (!url) return
+    for (var i = 0; i < tabs.length; i++) {          // dedupe: focus existing
+      if (urlOf(tabs[i]) === url || tabs[i].startUrl === url) { setActive(tabs[i]); syncTabBar(); return }
+    }
+    if (tabs.length >= 16) {                          // memory guard: evict oldest inactive
+      for (var j = 0; j < tabs.length; j++) if (tabs[j] !== active) { closeTab(tabs[j]); break }
+    }
+    setActive(makeTab(url))
+    syncTabBar()
+  }
+
+  bBack.addEventListener('click', function () { try { activeView().goBack() } catch (e) {} })
+  bFwd.addEventListener('click', function () { try { activeView().goForward() } catch (e) {} })
+  rel.addEventListener('click', function () {
+    try { activeView().reload() } catch (e) {}
+    rel.classList.add('spin')
+    setTimeout(function () { rel.classList.remove('spin') }, 900)
+  })
+  document.getElementById('bCopy').addEventListener('click', function () {
+    var b = this
+    window.linkAPI.copy(urlOf(active || { }))
+    b.classList.add('ok')
+    b.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.8 8.6l3.4 3.4 7-7.6"/></svg>'
+    setTimeout(function () { b.classList.remove('ok'); b.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5.6" y="5.6" width="8" height="8" rx="1.6"/><path d="M10.4 3.4H3.9a1.5 1.5 0 0 0-1.5 1.5v6.5"/></svg>' }, 900)
+  })
+  document.getElementById('bExt').addEventListener('click', function () { window.linkAPI.openExternal(urlOf(active || {})) })
+  document.getElementById('failExt').addEventListener('click', function () { window.linkAPI.openExternal(urlOf(active || {})) })
+  document.getElementById('bMin').addEventListener('click', function () { window.linkAPI.winCtl('min') })
+  document.getElementById('bMax').addEventListener('click', function () { window.linkAPI.winCtl('max') })
+  document.getElementById('bClose').addEventListener('click', function () { window.linkAPI.winCtl('close') })
+  document.getElementById('tb').addEventListener('dblclick', function () { window.linkAPI.winCtl('max') })
+
+  window.linkAPI.onOpen(openUrl)
+</script>
+</body>
+</html>

@@ -21,7 +21,7 @@
  * config.overlay: { enabled, opacity, theme, fontSize, side, anchorY, pos,
  *                   orbSize, bubbleTimeout, edgeSnap }
  */
-import { app, BrowserWindow, ipcMain, screen } from 'electron'
+import { app, ipcMain, screen } from 'electron'
 import { existsSync, readFileSync, unwatchFile, watchFile, appendFileSync, statSync, rmSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -29,6 +29,20 @@ import { fileURLToPath } from 'node:url'
 import { loadOverlay, saveOverlay } from './config.js'
 import { getStatus } from './service.js'
 import { startBackend, restartBackend, stopBackend } from './backend-actions.js'
+import { createReadStore } from './read-store.js'
+import { orbArea as orbAreaOf, orbWinX as orbWinXOf, orbWinY as orbWinYOf } from './orb-geometry.js'
+import { DshWindow } from './link-window.js'
+import {
+  pickApprovalInfo,
+  computeApprovalBounds,
+  approvalAgeLabel,
+  APPROVAL_W,
+  APPROVAL_EST_H,
+  APPROVAL_MARGIN,
+  APPROVAL_H_MIN,
+  APPROVAL_H_MAX,
+} from './approval-view.js'
+import { pickQuestionInfo } from './question-view.js'
 
 const PRELOAD = fileURLToPath(new URL('./overlay-preload.js', import.meta.url))
 const PAGE = fileURLToPath(new URL('./overlay.html', import.meta.url))
@@ -38,6 +52,8 @@ const MENU_PRELOAD = fileURLToPath(new URL('./menu-preload.js', import.meta.url)
 const MENU_PAGE = fileURLToPath(new URL('./menu.html', import.meta.url))
 const SETTINGS_PRELOAD = fileURLToPath(new URL('./overlay-settings-preload.js', import.meta.url))
 const SETTINGS_PAGE = fileURLToPath(new URL('./overlay-settings.html', import.meta.url))
+const APPROVAL_PRELOAD = fileURLToPath(new URL('./approval-preload.js', import.meta.url))
+const APPROVAL_PAGE = fileURLToPath(new URL('./approval.html', import.meta.url))
 
 // A fresh snapshot is rewritten by the backend at least every 5s; past this
 // window the writer is gone (backend stopped/crashed) → the orb goes grey.
@@ -72,6 +88,8 @@ let overlayWin = null
 let bubbleWin = null
 let menuWin = null
 let settingsWin = null
+let detailWin = null // approval hover card (side-mounted beside the bubble)
+let detailReady = false // renderer finished its approval:ready handshake
 let getMainWindow = null
 let watching = false
 let ipcReady = false
@@ -98,6 +116,17 @@ let hoverOrb = false
 let hoverBubble = false
 let lastEdgeSnap = null
 
+// approval hover-card state (mouse authority stays in the main process)
+let detailOpen = false
+let detailSessionId = null
+let detailKind = null // 'approval' | 'question' — the open card's flavor
+let detailHover = false
+let detailShowT = null
+let detailHideT = null
+let detailMeasuredH = 0
+let lastBubRect = null
+let lastBubSide = 'right'
+
 let slideTimer = null
 let hoverInT = null
 let closeT = null
@@ -117,6 +146,13 @@ const easeOutBack = (t) => {
 function stateFile() {
   return join(process.env.DSH_HOME || join(homedir(), '.dsh'), 'desktop-shell-state.json')
 }
+
+/** Durable read-marks for finished sessions (see read-store.js). */
+function readMarksFile() {
+  return join(process.env.DSH_HOME || join(homedir(), '.dsh'), 'desktop-shell-read.json')
+}
+const readStore = createReadStore(readMarksFile())
+readStore.load()
 
 /** Deep-link tracing: every row-click hop (main/preload/client) appends a
  *  line here so a jump failure pinpoints its broken stage. */
@@ -139,13 +175,14 @@ function applySnapshot(next) {
   const list = next && Array.isArray(next.sessions) ? next.sessions : []
   for (const s of list) {
     const was = prevRunning.get(s.id) === true
-    if (was && !s.running) {
+    if (was && !s.running && !readStore.isRead(s.id, s.finishedAt)) {
       unread.set(s.id, { name: s.name, at: s.finishedAt || Date.now() })
     }
     if (unread.has(s.id) && s.name) unread.get(s.id).name = s.name
     if (s.running) prevRunning.set(s.id, true)
     else prevRunning.delete(s.id)
   }
+  if (list.length) readStore.prune(list.map((s) => s.id))
   snap = next
   sendDisplay()
 }
@@ -161,8 +198,14 @@ function buildDisplay() {
   const seen = new Set()
   for (const s of list) {
     seen.add(s.id)
-    if (s.approvals > 0) rows.push({ id: s.id, name: s.name, kind: 'approval', at: s.lastChangeAt })
-    else if (s.questions > 0) rows.push({ id: s.id, name: s.name, kind: 'question', at: s.lastChangeAt })
+    if (s.approvals > 0) {
+      const ap = pickApprovalInfo(s)
+      rows.push({ id: s.id, name: s.name, kind: 'approval', at: s.lastChangeAt, ap: ap || undefined })
+    }
+    else if (s.questions > 0) {
+      const q = pickQuestionInfo(s)
+      rows.push({ id: s.id, name: s.name, kind: 'question', at: s.lastChangeAt, q: q || undefined })
+    }
     else if (s.running) rows.push({ id: s.id, name: s.name, kind: 'running', at: s.startedAt || s.lastChangeAt })
   }
   const runningCount = rows.length
@@ -196,7 +239,8 @@ function attentionChanged(full) {
 // ---------- geometry (window always fully inside its work area) ----------
 
 function orbArea(cfg) {
-  return clamp(cfg.orbSize, 40, 96) + ORB_MARGIN * 2
+  // orb-geometry.js guarantees a finite result for any persisted garbage.
+  return orbAreaOf(cfg, ORB_MARGIN)
 }
 
 function waFor() {
@@ -210,17 +254,11 @@ function waFor() {
 }
 
 function orbWinX(cfg, wa) {
-  const s = orbArea(cfg)
-  if (cfg.edgeSnap) return side === 'right' ? wa.x + wa.width - s : wa.x
-  const px = pos && Number.isFinite(pos.x) ? pos.x : wa.x + wa.width - s
-  return clamp(Math.round(px), wa.x, Math.max(wa.x, wa.x + wa.width - s))
+  return orbWinXOf(cfg, wa, side, pos, ORB_MARGIN)
 }
 
 function orbWinY(cfg, wa) {
-  const s = orbArea(cfg)
-  let y = cfg.edgeSnap ? anchorY : (pos && Number.isFinite(pos.y) ? pos.y : anchorY)
-  if (y === null || y === undefined) y = wa.y + 16
-  return clamp(Math.round(y), wa.y, Math.max(wa.y, wa.y + wa.height - s))
+  return orbWinYOf(cfg, wa, anchorY, pos, ORB_MARGIN)
 }
 
 /** Slide the orb WINDOW horizontally (used only when a snap changes the
@@ -231,6 +269,11 @@ function slideOrb(targetX, dur, easing, done) {
   const cfg = loadOverlay()
   const y = orbWinY(cfg, waFor())
   const startX = overlayWin.getBounds().x
+  if (!Number.isFinite(targetX) || !Number.isFinite(y)) {
+    trace('slideOrb dropped: non-finite target=' + targetX + ' y=' + y)
+    done && done()
+    return
+  }
   if (startX === targetX) { overlayWin.setPosition(startX, y); done && done(); return }
   const t0 = Date.now()
   slideTimer = setInterval(() => {
@@ -256,7 +299,7 @@ function scheduleUndock() {
   if (undockT) clearTimeout(undockT)
   undockT = setTimeout(() => {
     undockT = null
-    if (hoverOrb || hoverBubble || bubbleOpen || menuOpen || dragging || docked) return
+    if (anyHover() || bubbleOpen || menuOpen || dragging || docked) return
     setDocked(true)
   }, UNDOCK_MS)
 }
@@ -320,6 +363,9 @@ function pushBubble(full, cfg) {
   const b = bubbleBounds(cfg, full)
   bubSig = contentSig(full)
   bubbleWin.setBounds(b)
+  lastBubRect = b
+  lastBubSide = b.bside
+  if (detailOpen) pushDetail(full)
   bubbleWin.webContents.send('bubble:state', {
     mode: full.mode,
     runningCount: full.runningCount,
@@ -346,7 +392,7 @@ function showBubble(reason) {
     if (autoT) clearTimeout(autoT)
     autoT = setTimeout(() => {
       autoT = null
-      if (!hoverOrb && !hoverBubble) closeBubble()
+      if (!anyHover()) closeBubble()
     }, cfg.bubbleTimeout)
   }
 }
@@ -354,6 +400,7 @@ function showBubble(reason) {
 function closeBubble() {
   if (autoT) { clearTimeout(autoT); autoT = null }
   if (closeT) { clearTimeout(closeT); closeT = null }
+  closeDetail()
   if (!bubbleOpen) { scheduleUndock(); return }
   bubbleOpen = false
   openReason = null
@@ -366,10 +413,15 @@ function closeBubble() {
   scheduleUndock()
 }
 
+function anyHover() {
+  return hoverOrb || hoverBubble || detailHover
+}
+
 function setHover(which, v) {
   if (which === 'orb') hoverOrb = v
+  else if (which === 'approval') detailHover = v
   else hoverBubble = v
-  const any = hoverOrb || hoverBubble
+  const any = anyHover()
   if (any) {
     if (undockT) { clearTimeout(undockT); undockT = null }
     if (closeT) { clearTimeout(closeT); closeT = null }
@@ -377,7 +429,7 @@ function setHover(which, v) {
     if (!bubbleOpen && !menuOpen && !hoverInT) {
       hoverInT = setTimeout(() => {
         hoverInT = null
-        if ((hoverOrb || hoverBubble) && !bubbleOpen && !menuOpen && !dragging) showBubble('hover')
+        if (anyHover() && !bubbleOpen && !menuOpen && !dragging) showBubble('hover')
       }, HOVER_IN_MS)
     }
   } else {
@@ -385,11 +437,145 @@ function setHover(which, v) {
     if (bubbleOpen && openReason === 'hover') {
       closeT = setTimeout(() => {
         closeT = null
-        if (!(hoverOrb || hoverBubble)) closeBubble()
+        if (!anyHover()) closeBubble()
       }, HOVER_OUT_MS)
     }
     scheduleUndock()
   }
+}
+
+// ---------- approval hover card ----------
+// Mounts on the bubble's OUTER side (away from the orb); height is
+// self-reported by approval.html like the bubble's, so the card fits text.
+
+function detailHeightFor() {
+  return detailMeasuredH > 0 ? detailMeasuredH : APPROVAL_EST_H + APPROVAL_MARGIN * 2
+}
+
+function ensureApprovalWindow() {
+  if (detailWin && !detailWin.isDestroyed()) return detailWin
+  detailReady = false
+  detailWin = new DshWindow({
+    ...winBase(),
+    width: APPROVAL_W,
+    height: APPROVAL_EST_H + APPROVAL_MARGIN * 2,
+    x: -APPROVAL_W * 2,
+    y: -(APPROVAL_EST_H + APPROVAL_MARGIN * 2) * 2,
+    focusable: false,
+    webPreferences: { preload: APPROVAL_PRELOAD, contextIsolation: true, nodeIntegration: false, sandbox: true },
+  })
+  detailWin.setAlwaysOnTop(true, 'screen-saver')
+  detailWin.loadFile(APPROVAL_PAGE)
+  detailWin.webContents.on('console-message', (_e, level, message) => trace('detail:[' + level + '] ' + String(message).slice(0, 180)))
+  detailWin.webContents.on('did-finish-load', () => trace('detail did-finish-load'))
+  detailWin.webContents.on('did-fail-load', (_e, code, desc) => trace('detail did-FAIL-load ' + code + ' ' + desc))
+  detailWin.once('ready-to-show', () => trace('detail ready-to-show'))
+  // Watchdog: if the renderer never completes the ready handshake, dump its
+  // self-reported state so a stalled load is visible in the trace.
+  detailWin.webContents.on('did-finish-load', () => {
+    setTimeout(() => {
+      if (!detailWin || detailWin.isDestroyed() || detailReady) return
+      detailWin.webContents.executeJavaScript("(function(){var c=document.getElementById('card');return 'readyState=' + document.readyState + ' card=' + (c ? getComputedStyle(c).display + '/' + getComputedStyle(c).opacity + '/' + c.offsetHeight + 'px' : 'MISSING') + ' api=' + (typeof window.approvalAPI)})()")
+        .then((s) => trace('detail-stuck probe: ' + s))
+        .catch((e) => trace('detail-stuck probe err: ' + e.message))
+    }, 1200)
+  })
+  detailWin.on('closed', () => { detailWin = null; detailOpen = false; detailSessionId = null })
+  return detailWin
+}
+
+/** Refresh (or withdraw) the open card from the current display rows. */
+function pushDetail(full) {
+  if (!detailOpen || !detailWin || detailWin.isDestroyed()) return
+  const rows = (full || buildDisplay()).rows
+  const wantQuestion = detailKind === 'question'
+  const row = rows.find((r) => r.id === detailSessionId && (wantQuestion ? r.q : r.ap))
+  if (!row) { closeDetail(); return }
+  const base = lastBubRect || bubbleBounds(loadOverlay(), buildDisplay())
+  const bounds = computeApprovalBounds(base, detailHeightFor(), waFor(), lastBubSide)
+  detailWin.setBounds(bounds)
+  trace('detail-bounds ' + JSON.stringify(detailWin.getBounds()) + ' want=' + JSON.stringify(bounds))
+  const src = wantQuestion ? row.q : row.ap
+  const payload = {
+    kind: wantQuestion ? 'question' : 'approval',
+    sessionId: row.id,
+    name: row.name,
+    more: src.more,
+    sinceTs: src.since,
+    ageLabel: approvalAgeLabel(src.since, Date.now()),
+    tail: bounds.tail,
+  }
+  if (wantQuestion) {
+    payload.n = src.n
+    payload.uiOnly = src.uiOnly
+    payload.pages = src.pages
+  } else {
+    payload.toolName = src.toolName
+    payload.reason = src.reason
+  }
+  detailWin.webContents.send('approval:state', payload)
+  if (!detailWin.isVisible()) detailWin.showInactive()
+  trace('detail-show vis=' + detailWin.isVisible() + ' loading=' + detailWin.webContents.isLoadingMainFrame())
+  setTimeout(() => {
+    try { trace('detail-after vis=' + detailWin.isVisible() + ' op=' + detailWin.getOpacity() + ' b=' + JSON.stringify(detailWin.getBounds())) } catch { /* gone */ }
+  }, 400)
+}
+
+function openDetail(id) {
+  if (menuOpen || dragging || !bubbleOpen) { trace('ap-open blocked: menu/drag/no-bubble'); return }
+  const rows = buildDisplay().rows
+  const row = rows.find((r) => r.id === id && (r.ap || r.q))
+  if (!row) { trace('ap-open dropped: no ap/q detail for ' + id.slice(-6)); return }
+  detailKind = row.q ? 'question' : 'approval'
+  detailSessionId = id
+  detailOpen = true
+  ensureApprovalWindow()
+  trace('ap-open ' + id.slice(-6) + ' ' + (row.q
+    ? 'kind=question n=' + row.q.n + (row.q.uiOnly ? ' uiOnly' : '')
+    : 'kind=approval tool=' + row.ap.toolName))
+  pushDetail(buildDisplay())
+}
+
+function closeDetail() {
+  if (detailShowT) { clearTimeout(detailShowT); detailShowT = null }
+  if (detailHideT) { clearTimeout(detailHideT); detailHideT = null }
+  if (!detailOpen) return
+  detailOpen = false
+  detailSessionId = null
+  detailKind = null
+  trace('ap-close')
+  if (detailWin && !detailWin.isDestroyed()) {
+    // Free-text answers made the card focusable; hand focusability back so
+    // an approval hover never steals the keyboard again.
+    try { detailWin.setFocusable(false) } catch { /* window mid-destroy */ }
+    detailWin.webContents.send('approval:hide')
+    setTimeout(() => {
+      if (!detailOpen && detailWin && !detailWin.isDestroyed()) detailWin.hide()
+    }, BUBBLE_OUT_MS)
+  }
+}
+
+/** Short delay before mounting: sweeping the cursor across the list must
+ *  not flap the card open per row. */
+function scheduleDetailShow(id) {
+  if (detailHideT) { clearTimeout(detailHideT); detailHideT = null }
+  if (detailOpen && detailSessionId === id) return
+  if (detailShowT) clearTimeout(detailShowT)
+  detailShowT = setTimeout(() => {
+    detailShowT = null
+    if (hoverBubble || detailHover) openDetail(id)
+  }, HOVER_IN_MS)
+}
+
+/** Grace window covers the transit gap between the two windows. */
+function scheduleDetailHide() {
+  if (detailShowT) { clearTimeout(detailShowT); detailShowT = null }
+  if (!detailOpen) return
+  if (detailHideT) clearTimeout(detailHideT)
+  detailHideT = setTimeout(() => {
+    detailHideT = null
+    if (!detailHover) closeDetail()
+  }, HOVER_OUT_MS)
 }
 
 // ---------- menu control ----------
@@ -425,7 +611,7 @@ function closeMenu() {
   if (!menuOpen) return
   menuOpen = false
   if (menuWin && !menuWin.isDestroyed() && menuWin.isVisible()) menuWin.hide()
-  if (!hoverOrb && !hoverBubble) scheduleUndock()
+  if (!anyHover()) scheduleUndock()
 }
 
 // ---------- senders ----------
@@ -464,6 +650,9 @@ function sendConfig() {
   }
   if (menuWin && !menuWin.isDestroyed()) {
     menuWin.webContents.send('menu:config', { theme: cfg.theme, fontSize: cfg.fontSize })
+  }
+  if (detailWin && !detailWin.isDestroyed()) {
+    detailWin.webContents.send('approval:config', { opacity: cfg.opacity, theme: cfg.theme, fontSize: cfg.fontSize })
   }
   if (settingsWin && !settingsWin.isDestroyed()) settingsWin.webContents.send('overlay:config', cfg)
 }
@@ -528,11 +717,11 @@ function createOrbWindow() {
   const cfg = loadOverlay()
   side = cfg.side
   anchorY = cfg.anchorY
-  pos = cfg.pos && Number.isFinite(cfg.pos.x) ? { x: cfg.pos.x, y: cfg.pos.y } : null
+  pos = cfg.pos && Number.isFinite(cfg.pos.x) && Number.isFinite(cfg.pos.y) ? { x: cfg.pos.x, y: cfg.pos.y } : null
   docked = cfg.edgeSnap
   const wa = waFor()
   const s = orbArea(cfg)
-  overlayWin = new BrowserWindow({
+  overlayWin = new DshWindow({
     ...winBase(),
     width: s,
     height: s,
@@ -550,7 +739,7 @@ function createOrbWindow() {
 
 function createBubbleWindow() {
   if (bubbleWin && !bubbleWin.isDestroyed()) return bubbleWin
-  bubbleWin = new BrowserWindow({
+  bubbleWin = new DshWindow({
     ...winBase(),
     width: BUBBLE_CARD_W + BUB_MARGIN * 2,
     height: BUBBLE_H_MIN + BUB_MARGIN * 2,
@@ -567,7 +756,7 @@ function createBubbleWindow() {
 
 function createMenuWindow() {
   if (menuWin && !menuWin.isDestroyed()) return menuWin
-  menuWin = new BrowserWindow({
+  menuWin = new DshWindow({
     ...winBase(),
     width: MENU_W,
     height: 200,
@@ -596,6 +785,76 @@ function registerIpc() {
 
   ipcMain.on('overlay:orb-hover', (_e, v) => setHover('orb', !!v))
   ipcMain.on('bubble:hover', (_e, v) => setHover('bubble', !!v))
+  ipcMain.on('approval:hover', (_e, v) => setHover('approval', !!v))
+
+  // bubble rows: hovering an approval row mounts the detail card
+  ipcMain.on('bubble:approval-hover', (_e, id) => {
+    trace('ap-hover ' + (typeof id === 'string' && id ? id.slice(-6) : '-'))
+    if (typeof id === 'string' && id) scheduleDetailShow(id)
+    else scheduleDetailHide()
+  })
+
+  ipcMain.on('approval:ready', () => { detailReady = true; trace('detail-ready recv'); sendConfig(); if (detailOpen) pushDetail() })
+
+  // The card's buttons: allow/reject answer the live pending approval in
+  // the web page (client half calls PendingApproval.answer — equivalent to
+  // clicking the in-app card); detail raises the DSH window.
+  ipcMain.on('approval:act', (_e, payload) => {
+    const id = payload && payload.id
+    const action = payload && payload.action
+    if (typeof id !== 'string' || !id || typeof action !== 'string') return
+    if (action === 'detail') {
+      trace('approval-detail ' + id)
+      closeBubble()
+      focusMain(id)
+      return
+    }
+    if (action === 'want-input') {
+      // Free-text answers need a real keyboard: flip the (otherwise
+      // focus-stealing-free) detail window focusable and take focus.
+      if (detailWin && !detailWin.isDestroyed()) {
+        try { detailWin.setFocusable(true); detailWin.focus(); detailWin.webContents.focus() } catch (err) { trace('want-input failed: ' + (err && err.message)) }
+      }
+      return
+    }
+    if (action === 'answer') {
+      const main = getMainWindow && getMainWindow()
+      if (!main || main.isDestroyed()) { trace('answer dropped: no main window'); return }
+      if (!Array.isArray(payload.answers) || payload.answers.length === 0) { trace('answer dropped: no answers'); return }
+      try {
+        main.webContents.send('shell:answer-question', { sessionId: id, answers: payload.answers })
+        trace('sent answer x' + payload.answers.length + ' ' + id)
+      } catch (err) {
+        trace('answer send failed: ' + (err && err.message))
+      }
+      return
+    }
+    if (action !== 'allow' && action !== 'reject') return
+    const main = getMainWindow && getMainWindow()
+    if (!main || main.isDestroyed()) {
+      trace('approve dropped: no main window (' + action + ')')
+      return
+    }
+    try {
+      main.webContents.send('shell:approve-session', { sessionId: id, decision: action })
+      trace('sent approve ' + action + ' ' + id)
+    } catch (err) {
+      trace('approve send failed: ' + (err && err.message))
+    }
+  })
+
+  ipcMain.on('approval:size', (_e, h) => {
+    if (!detailWin || detailWin.isDestroyed() || !Number.isFinite(h)) return
+    const want = clamp(Math.round(h) + APPROVAL_MARGIN * 2, APPROVAL_H_MIN, APPROVAL_H_MAX)
+    if (want === detailMeasuredH) return
+    detailMeasuredH = want
+    if (!detailOpen) return
+    const cur = detailWin.getBounds()
+    if (Math.abs(cur.height - want) > 1) {
+      const wa = waFor()
+      detailWin.setBounds({ x: cur.x, y: clamp(cur.y, wa.y, Math.max(wa.y, wa.y + wa.height - want)), width: cur.width, height: want })
+    }
+  })
 
   // Cursor-driven drag: the renderer sends NO coordinates (per-monitor DPI
   // makes renderer screen coords unreliable); everything is computed from
@@ -677,9 +936,23 @@ function registerIpc() {
 
   ipcMain.on('bubble:row', (_e, id) => {
     trace('row-click ' + JSON.stringify(id))
-    if (typeof id === 'string' && unread.has(id)) unread.delete(id)
+    if (typeof id === 'string' && id) {
+      readStore.markRead(id)
+      unread.delete(id)
+    }
     closeBubble()
     focusMain(id)
+  })
+
+  // 「一键清除」: acknowledge every done row at once (same effect as clicking
+  // each row, without jumping to any session). Approval/question/running
+  // rows are untouched — they are live demands, not notifications.
+  ipcMain.on('bubble:read-all', () => {
+    if (unread.size === 0) return
+    trace('bubble-read-all ' + unread.size)
+    readStore.markAll([...unread.keys()])
+    unread.clear()
+    sendDisplay()
   })
 
   ipcMain.on('bubble:blank', () => {
@@ -763,17 +1036,20 @@ export function applyOverlayConfig() {
   const cfg = loadOverlay()
   side = cfg.side
   anchorY = cfg.anchorY
-  pos = cfg.pos && Number.isFinite(cfg.pos.x) ? { x: cfg.pos.x, y: cfg.pos.y } : null
+  pos = cfg.pos && Number.isFinite(cfg.pos.x) && Number.isFinite(cfg.pos.y) ? { x: cfg.pos.x, y: cfg.pos.y } : null
   if (!cfg.enabled) {
     stopWatching()
     closeBubble()
     closeMenu()
-    for (const w of [bubbleWin, menuWin, overlayWin]) {
+    for (const w of [detailWin, bubbleWin, menuWin, overlayWin]) {
       if (w && !w.isDestroyed()) w.close()
     }
     overlayWin = null
     bubbleWin = null
     menuWin = null
+    detailWin = null
+    detailOpen = false
+    detailSessionId = null
     lastEdgeSnap = null
     return
   }
@@ -810,7 +1086,7 @@ export function openOverlaySettings() {
     settingsWin.focus()
     return settingsWin
   }
-  settingsWin = new BrowserWindow({
+  settingsWin = new DshWindow({
     width: 344,
     height: 480,
     show: false,
@@ -860,7 +1136,7 @@ export function resetOverlayPosition() {
 export function disposeOverlay() {
   stopWatching()
   if (slideTimer) clearInterval(slideTimer)
-  for (const t of [hoverInT, closeT, autoT, undockT]) if (t) clearTimeout(t)
+  for (const t of [hoverInT, closeT, autoT, undockT, detailShowT, detailHideT]) if (t) clearTimeout(t)
   unread.clear()
   prevRunning.clear()
 }
