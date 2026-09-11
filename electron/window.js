@@ -21,6 +21,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { probe, onStatusChange, detect, getAuthenticatedUrl } from './service.js'
 import { startBackendWithProgress, chooseBackendFolder } from './tray.js'
+import { attachLinkWindows, DshWindow } from './link-window.js'
 import { APP_USER_MODEL_ID } from './aumid.js'
 
 export const WINDOWS_TITLEBAR_HEIGHT = 32
@@ -214,7 +215,11 @@ export function createMainWindow({ target }) {
   }
   // Linux / other: keep the native frame.
 
-  const win = new BrowserWindow(options)
+  const win = new DshWindow(options)
+  // target=_blank links open in our self-drawn link window (frameless,
+  // 复制链接/去浏览器 toolbar) instead of Electron's default child window
+  // with its stock File/Edit menu.
+  attachLinkWindows(win)
   // Windows taskbar button: bare runtime electron.exe has no custom icon,
   // so pin the button to our .ico via setAppDetails (appId must match the
   // app-level AppUserModelId set in main.js, else the options are ignored).

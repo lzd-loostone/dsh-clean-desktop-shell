@@ -74,12 +74,13 @@
     background: var(--badge-bg);
     color: var(--badge-text);
     font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif;
-    font-size: 11px; font-weight: 700; line-height: 18px; text-align: center;
+    font-size: 11px; font-weight: 700; line-height: 1;
+    display: none; align-items: center; justify-content: center;
     border: 1.5px solid rgba(10, 12, 18, 0.55);
-    display: none;
+    border-radius: 9px;
     pointer-events: none;
   }
-  .orb.active .badge { display: block; }
+  .orb.active .badge { display: flex; }
   /* Docked right → the right half is clipped → keep badges on the visible side. */
   .stage.edge-right .badge { right: auto; left: -4px; }
   .stage.edge-right .att { right: auto; left: 0; }

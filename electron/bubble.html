@@ -24,6 +24,8 @@
     --track: rgba(0, 0, 0, 0.05);
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
+  /* The hidden attribute must beat author display rules (.clear/.more are flex). */
+  [hidden] { display: none !important; }
   html, body { background: transparent; height: 100%; overflow: hidden; }
   body {
     font-family: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
@@ -61,6 +63,13 @@
   .bar { height: 3px; background: linear-gradient(90deg, #34d399, #60a5fa, #a78bfa, #f472b6); opacity: .85; }
   .bhead { display: flex; align-items: center; gap: 8px; padding: 12px 14px 8px; }
   .bhead .title { font-size: calc(var(--fs) + 1.5px); font-weight: 600; letter-spacing: .2px; }
+  .bhead .clear {
+    margin-left: auto; flex: none; width: 24px; height: 22px; font: inherit; cursor: pointer;
+    color: var(--text-dim); background: var(--track); border: 0; border-radius: 7px;
+    display: flex; align-items: center; justify-content: center;
+    transition: color .12s ease, background-color .12s ease;
+  }
+  .bhead .clear:hover { color: var(--text); background: var(--row-hover); }
   .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; background: #34d399; }
   .dot.pulse { animation: dotpulse 1.6s ease-in-out infinite; }
   @keyframes dotpulse {
@@ -101,6 +110,7 @@
     <div class="bhead">
       <span class="dot" id="dot"></span>
       <span class="title" id="title">DSH 空闲</span>
+      <button class="clear" id="clearBtn" hidden title="一键清除已完成提醒"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M2.6 8.6l3.4 3.4 7.4-8"/></svg></button>
     </div>
     <div class="rows" id="rows"></div>
     <div class="more" id="more" hidden></div>
@@ -136,6 +146,8 @@
       rowsEl.appendChild(e)
     }
     for (var i = 0; i < list.length; i++) rowsEl.appendChild(makeRow(list[i]))
+    var clearBtn = document.getElementById('clearBtn')
+    clearBtn.hidden = !list.some(function (r) { return r.kind === 'done' })
     moreEl.hidden = !d.more
     if (d.more) moreEl.textContent = '+ 还有 ' + d.more + ' 个会话…'
 
@@ -174,6 +186,10 @@
       u.className = 'unread'
       el.appendChild(u)
     }
+    if (r.kind === 'approval' || r.kind === 'question') {
+      el.addEventListener('mouseenter', function () { window.bubbleAPI.approvalHover(r.id) })
+      el.addEventListener('mouseleave', function () { window.bubbleAPI.approvalHover(null) })
+    }
     if (!first && FLASH_KINDS[r.kind] && changed) {
       el.classList.add('flash')
       el.addEventListener('animationend', function () { el.classList.remove('flash') })
@@ -186,9 +202,16 @@
     return el
   }
 
+  document.getElementById('clearBtn').addEventListener('click', function (ev) {
+    ev.stopPropagation()
+    window.bubbleAPI.readAll()
+  })
   document.getElementById('card').addEventListener('click', function () { window.bubbleAPI.blankClick() })
   document.body.addEventListener('mouseenter', function () { window.bubbleAPI.hover(true) })
-  document.body.addEventListener('mouseleave', function () { window.bubbleAPI.hover(false) })
+  document.body.addEventListener('mouseleave', function () {
+    window.bubbleAPI.hover(false)
+    window.bubbleAPI.approvalHover(null)
+  })
 
   window.bubbleAPI.onState(render)
   window.bubbleAPI.onHide(function () {
