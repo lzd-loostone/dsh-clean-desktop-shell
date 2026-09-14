@@ -6,12 +6,19 @@
  * `-webkit-app-region: drag` strip along the top of the loaded page.
  * The right side is left for the native window-controls overlay.
  *
- * The strip is a transparent overlay, so it never changes page layout —
- * but it sits above the page top edge, so page top-bar buttons can be
- * reached by the strip being only 1px tall at the very edge... Instead we
- * use a pragmatic height and rely on the page's own top padding for the
- * DSH top bar area. Overlap is acceptable: the strip is click-through for
- * everything except dragging (app-region drag areas swallow mouse events).
+ * The overlay (caption buttons + drag band) floats over the page and
+ * shares no layout with it — so the page must keep the top band free
+ * itself. We inject a caption-safe padding onto <body>: DSH's shell is
+ * an unbroken `height: 100%` chain (html/body/#root → AppFrame grid),
+ * and with `box-sizing: border-box` on body the padding *shrinks* the
+ * app instead of overflowing it — every column (sidebar, header,
+ * conversation, rightbar) starts below the band. The band height comes
+ * from Electron's own `env(titlebar-area-height)` (kept in sync with
+ * WINDOWS_TITLEBAR_HEIGHT by the platform, not by us); the px fallback
+ * covers the offline error page where no overlay metric is exposed.
+ * This replaces the old 148px spacer that the client plugin injected
+ * into DSH's header utility slot — that only masked the missing
+ * vertical inset and died with the 0.1.5 slot rework.
  */
 const { contextBridge, ipcRenderer } = require('electron')
 
@@ -62,6 +69,17 @@ window.addEventListener('DOMContentLoaded', () => {
   // traffic lights live at the top-right / top-left).
   const rightReserve = isWin ? 138 : 80
   const leftReserve = isWin ? 0 : 80
+
+  // Caption-safe band: push the page content below the window overlay.
+  // See the header comment for why border-box padding on <body> is the
+  // only stable, DSH-internal-structure-free anchor for this.
+  const safe = document.createElement('style')
+  safe.id = 'dsh-clean-shell-caption-safe'
+  safe.textContent = `
+    html { --dsh-caption-h: env(titlebar-area-height, ${dragHeight}px); }
+    body { box-sizing: border-box; padding-top: var(--dsh-caption-h); }
+  `
+  document.head.appendChild(safe)
 
   const strip = document.createElement('div')
   strip.id = 'dsh-clean-shell-drag'
