@@ -45,6 +45,16 @@ function append(entry) {
 }
 
 /**
+ * One timestamped line in the same log. Used for state flips the user would
+ * otherwise only experience as "the window blinked" (watchdog -> offline
+ * screen, auto-reload back) — cheap, append-only, capped like everything else
+ * in here, and the only way a report can be attributed after the fact.
+ */
+export function logEvent(msg) {
+  append(`[${new Date().toISOString()}] ${msg}\n`)
+}
+
+/**
  * Install process-level handlers. Errors are logged and swallowed: for a
  * tray-resident shell, surviving one stray async rejection beats dying on
  * it — the process-level state after a handled uncaughtException is the

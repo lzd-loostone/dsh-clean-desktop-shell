@@ -14,6 +14,7 @@ import { access } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { loadConfig, DEFAULT_TARGET_URL } from './config.js'
+import { probe } from './probe.js'
 
 // The local backend endpoint — derived from the shared default, never a
 // duplicated literal.
@@ -77,18 +78,6 @@ export function getStatus() {
     url: LOCAL_URL,
     error: lastError,
     pid: child?.pid ?? null,
-  }
-}
-
-/** Simple HTTP probe — true when something responds on the port. */
-export async function probe(url, timeoutMs = 1500) {
-  try {
-    // AbortSignal.timeout is the standard self-cleaning timeout — no manual
-    // controller/timer pair to leak when fetch rejects first.
-    const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs), redirect: 'follow' })
-    return res.status < 500
-  } catch {
-    return false
   }
 }
 

@@ -212,6 +212,11 @@ npm run pack    # 打包 NSIS (Win) / DMG (mac)
 
 ## 更新历史
 
+### 0.3.4
+- **主窗「闪断」根治（看门狗防抖）**：以前主窗每 4 秒探测一次后端，**单次 1.5 秒没答**就判定后端已死，立刻把还在正常显示的页面换成「后端未连接」页，并在恢复时整页重载——丢掉输入框草稿、滚动位置与流式回复。实测根因：机器被 IDE/Gradle 并行编译压满时，DSH 后端事件循环会被饿住 5–8 秒（抓到的同一次卡死里，连我们自己 1Hz 的采样脚本都跳了 46 秒），任务其实一直在跑。现在探针保留失败原因（新增 `electron/probe.js`：`probeDetail()` 返回 `{alive,fatal,why}`，`probe()` 维持原布尔契约）：只有 `ECONNREFUSED` 这类「没人监听」仍然**立即**翻离线页（托盘停止 / 外部 kill / 崩溃的即时性不变）；超时、连接重置、5xx 记为「活着但没答上」，需连续 3 次（约 12 秒完全无应答）才翻，答一次即清零。`showOffline()` 改幂等，已在离线页时不再重复导航造成二次闪烁。
+- **可归因日志**：`shell-crash.log`（`%APPDATA%/DSH Clean Desktop Shell/`）新增壳主进程事件行——`watchdog: probe miss 1/3 (TIMEOUT)` / `watchdog: offline after 3 miss(es) (...)` / `window: -> offline screen (...)` / `window: offline -> reloading backend page (...)`。以前翻转零日志，用户报「闪一下」无法判定是哪一侧卡的。
+- **单元测试**：新增 `electron/probe.test.js`（4 项）钉死判定边界——401 算活、502 是 miss 但不是死、永不回应是 miss 不是死、没人监听才是死；`node --test` 与 `node scripts/check-syntax.mjs` 全绿。
+
 ### 0.3.3
 - **头部安全区改根治方案（适配 DSH 0.1.5）**：0.2.1 的「隐形占位 cell 左移 148px」依赖 DSH 私有 slot（`conversation.session.header.utilities`），在 0.1.5 面板重构后已失效，且它只解决横向碰撞、没解决「顶栏内容坐在 Windows 标题栏拖拽区里」的根因。现在由壳的 preload 直接给页面 `<body>` 注入 caption 高度的 `padding-top`（高度取 Electron `env(titlebar-area-height)`，兜底 32px），整页内容（侧栏/头部/会话/右栏）从标题栏下方起排；原生按钮与拖拽条悬浮在空出的安全带内，不再压任何内容。client 半区的占位注册随之删除。
 - 本地开发验证：`npm run build`（src→lib 直拷）+ `node scripts/check-syntax.mjs` + `node scripts/selftest-runtime.mjs` 全绿。

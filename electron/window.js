@@ -13,13 +13,19 @@
  *    answers, the real page is loaded automatically;
  *  - the moment the backend goes down (tray stop, external kill, crash) the
  *    window flips back to the offline screen instead of showing a stale page
- *    that suggests the app is still alive.
+ *    that suggests the app is still alive;
+ *  - a probe that merely answers late is NOT a death. Swapping a live page for
+ *    the offline screen reloads the app and throws away the draft in the
+ *    composer, the scroll position and the streaming reply, so the watch loop
+ *    waits for a refused connection or several consecutive misses first.
  */
 import { app, BrowserWindow, ipcMain } from 'electron'
 import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { probe, onStatusChange, detect, getAuthenticatedUrl } from './service.js'
+import { onStatusChange, detect, getAuthenticatedUrl } from './service.js'
+import { probe, probeDetail } from './probe.js'
+import { logEvent } from './crashGuard.js'
 import { startBackendWithProgress, chooseBackendFolder } from './tray.js'
 import { attachLinkWindows, DshWindow } from './link-window.js'
 import { APP_USER_MODEL_ID } from './aumid.js'
@@ -59,6 +65,13 @@ const ERROR_PAGE_URL = pathToFileURL(ERROR_PAGE).href
 const RECONNECT_INTERVAL_MS = 2500
 // How often we check the backend is still alive while the page is shown.
 const WATCH_INTERVAL_MS = 4000
+// How long one watch probe waits for an answer before calling it a miss.
+const PROBE_TIMEOUT_MS = 1500
+// Misses in a row that count as a death. A loaded machine (IDE/Gradle build,
+// disk scan) stalls the backend's event loop for seconds at a time, so one
+// late answer is common and says nothing about the process; three in a row
+// (about 12 s without any reply) is a service worth telling the user about.
+const WATCH_GRACE_FAILURES = 3
 // ERR_ABORTED — navigation was cancelled, not a real failure. Ignore it.
 const ERR_ABORTED = -3
 
@@ -105,6 +118,7 @@ function startReconnect(win, target) {
     const up = await probe(target)
     if (up) {
       stopReconnect(win)
+      logEvent('window: offline -> reloading backend page (' + target + ')')
       win.webContents.loadURL(target).catch(() => startReconnect(win, target))
     }
   }, RECONNECT_INTERVAL_MS)
@@ -124,17 +138,32 @@ function stopWatch(win) {
 /** While the real page is shown, watch that the backend stays alive. */
 function startWatch(win, target) {
   if (watchTimers.has(win.id)) return
+  let misses = 0
   const timer = setInterval(async () => {
     if (win.isDestroyed()) {
       stopWatch(win)
       return
     }
-    const up = await probe(target, 1500)
-    if (!up) {
-      // Backend vanished — flip to the offline screen immediately so the
-      // stale page cannot fool the user into thinking the app is alive.
-      showOffline(win)
+    const res = await probeDetail(target, PROBE_TIMEOUT_MS)
+    if (res.alive) {
+      misses = 0
+      return
     }
+    if (!res.fatal) {
+      // Alive but late: leave the page alone and ask again next tick. A long
+      // stall still reaches the threshold, so a wedged process cannot keep a
+      // stale page looking healthy forever.
+      misses += 1
+      if (misses < WATCH_GRACE_FAILURES) {
+        logEvent('watchdog: probe miss ' + misses + '/' + WATCH_GRACE_FAILURES + ' (' + res.why + ')')
+        return
+      }
+    }
+    // Nothing is listening (or nothing answered at all) — flip to the offline
+    // screen so the stale page cannot fool the user into thinking the app is
+    // alive. This is the tray-stop / external-kill / crash case.
+    logEvent('watchdog: offline after ' + (misses || 1) + ' miss(es) (' + res.why + ')')
+    showOffline(win)
   }, WATCH_INTERVAL_MS)
   watchTimers.set(win.id, timer)
 }
@@ -145,7 +174,14 @@ function startWatch(win, target) {
 function showOffline(win) {
   if (win.isDestroyed()) return
   const target = windowTargets.get(win.id)
+  if (win.webContents.getURL().startsWith(ERROR_PAGE_URL)) {
+    // Already dark — re-navigating would flash the page again and restart the
+    // reconnect wait for nothing; just make sure the re-probe is running.
+    if (target) startReconnect(win, target)
+    return
+  }
   stopWatch(win)
+  logEvent('window: -> offline screen (' + (win.webContents.getURL() || 'no url') + ')')
   win.loadFile(ERROR_PAGE).catch(() => {})
   if (target) startReconnect(win, target)
 }
