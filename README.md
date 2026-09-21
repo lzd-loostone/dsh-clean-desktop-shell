@@ -212,6 +212,9 @@ npm run pack    # 打包 NSIS (Win) / DMG (mac)
 
 ## 更新历史
 
+### 0.3.5
+- **悬浮球不再被全屏应用吞掉（置顶带重排）**：球窗一直是 `WS_EX_TOPMOST`，但该样式只保证「压住一切非置顶窗口」——**置顶窗口之间，谁最后被抬起谁在上面**。实测本机球窗 ex-style `0x08000008`（确实置顶），而 EnumWindows 里它排在置顶带第 **#25** 位、豆包球在第 **#2** 位：任何同样置顶的全屏播放器 / 幻灯片 / 别的悬浮助手一旦被抬起就永久压在球上，而此后我们没有任何动作把位置抢回来。对照实验（用与 `winBase()` 同参数的窗口 + 全屏窗逐帧取样）证明：普通全屏窗与 `setFullScreen(true)` 都压不住球，只有「全屏 + 置顶」复现，且此后任何一次重发置顶都能立刻翻回来。`electron/overlay.js` 因此新增 `keepOnTop()`：对**可见**窗口按球→气泡→详情→菜单自下而上重发 `setAlwaysOnTop(true,'screen-saver')`，由 `initOverlay()` 起的 1s 定时器驱动、`disposeOverlay()` 清理，`showBubble()` 再即时补一次以免卡片弹在别人下面。Windows 上这相当于一次 `SetWindowPos(HWND_TOPMOST, NOMOVE|NOSIZE|NOACTIVATE)`——不抢键盘（球是 `focusable:false`，永远收不到前台事件，这正是只能用定时重发的原因）、不移位、不重绘；主窗 / 设置窗 / 链接窗刻意不在名单内，它们本就不该置顶。真代码验证：直接 import 仓库的 `overlay.js` 起球，随后弹一个置顶全屏窗，400ms 轮询 z 序——被压住后 **430ms 内**球重新排到该窗之上并全程保持。独占全屏游戏绕过合成器，普通窗口无论层级都盖不住，不在本次范围。
+
 ### 0.3.4
 - **主窗「闪断」根治（看门狗防抖）**：以前主窗每 4 秒探测一次后端，**单次 1.5 秒没答**就判定后端已死，立刻把还在正常显示的页面换成「后端未连接」页，并在恢复时整页重载——丢掉输入框草稿、滚动位置与流式回复。实测根因：机器被 IDE/Gradle 并行编译压满时，DSH 后端事件循环会被饿住 5–8 秒（抓到的同一次卡死里，连我们自己 1Hz 的采样脚本都跳了 46 秒），任务其实一直在跑。现在探针保留失败原因（新增 `electron/probe.js`：`probeDetail()` 返回 `{alive,fatal,why}`，`probe()` 维持原布尔契约）：只有 `ECONNREFUSED` 这类「没人监听」仍然**立即**翻离线页（托盘停止 / 外部 kill / 崩溃的即时性不变）；超时、连接重置、5xx 记为「活着但没答上」，需连续 3 次（约 12 秒完全无应答）才翻，答一次即清零。`showOffline()` 改幂等，已在离线页时不再重复导航造成二次闪烁。
 - **可归因日志**：`shell-crash.log`（`%APPDATA%/DSH Clean Desktop Shell/`）新增壳主进程事件行——`watchdog: probe miss 1/3 (TIMEOUT)` / `watchdog: offline after 3 miss(es) (...)` / `window: -> offline screen (...)` / `window: offline -> reloading backend page (...)`。以前翻转零日志，用户报「闪一下」无法判定是哪一侧卡的。

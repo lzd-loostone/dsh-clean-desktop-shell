@@ -127,6 +127,7 @@ let lastBubRect = null
 let lastBubSide = 'right'
 
 let slideTimer = null
+let keepTopTimer = null
 let hoverInT = null
 let closeT = null
 let autoT = null
@@ -387,6 +388,7 @@ function showBubble(reason) {
   }
   pushBubble(full, cfg)
   bubbleWin.showInactive()
+  keepOnTop() // the card must land above whatever is on top right now
   if (reason === 'auto') {
     if (autoT) clearTimeout(autoT)
     autoT = setTimeout(() => {
@@ -751,6 +753,43 @@ function createMenuWindow() {
   return menuWin
 }
 
+// ---------- always-on-top maintenance ----------
+//
+// WS_EX_TOPMOST only promises "above every non-topmost window". Inside the
+// topmost band, paint order is whoever was raised last — and a window that is
+// raised later simply sits on top of the orb. That is why the ball disappears
+// under 全屏 apps: video players, slide shows and other floating assistants
+// are topmost too, and the moment one of them is raised it buries us.
+// (Measured: after such a window came up, our orb ranked #25 in the band while
+// 豆包's ball ranked #2 — theirs wins, ours vanished.)
+//
+// Re-asserting topmost is what puts us back at the front of the band: on
+// Windows it is one SetWindowPos(HWND_TOPMOST, NOMOVE|NOSIZE|NOACTIVATE), so it
+// neither steals the keyboard nor repaints anything. It also works when the
+// level is unchanged — no early-out — and even a window that is not focused
+// (the orb is focusable:false, so it can never get a foreground event) can be
+// re-raised this way. Electron gives us no notification that someone else
+// climbed above us, so keep the promise with a slow timer; bottom-up so the
+// bubble stays above the orb and the menu above both.
+const KEEP_TOP_MS = 1000
+
+function keepOnTop() {
+  for (const w of [overlayWin, bubbleWin, detailWin, menuWin]) {
+    if (w && !w.isDestroyed() && w.isVisible()) w.setAlwaysOnTop(true, 'screen-saver')
+  }
+}
+
+function startKeepOnTop() {
+  if (keepTopTimer) return
+  keepTopTimer = setInterval(keepOnTop, KEEP_TOP_MS)
+  keepOnTop()
+}
+
+function stopKeepOnTop() {
+  if (keepTopTimer) clearInterval(keepTopTimer)
+  keepTopTimer = null
+}
+
 // ---------- ipc ----------
 
 function registerIpc() {
@@ -1008,6 +1047,7 @@ function focusMain(sessionId) {
 export function initOverlay({ getMainWindow: provider }) {
   getMainWindow = provider
   registerIpc()
+  startKeepOnTop()
 }
 
 /** Reconcile windows/watchers with the persisted config. */
@@ -1113,6 +1153,7 @@ export function resetOverlayPosition() {
 
 /** Release watchers (called on app quit). */
 export function disposeOverlay() {
+  stopKeepOnTop()
   stopWatching()
   if (slideTimer) clearInterval(slideTimer)
   for (const t of [hoverInT, closeT, autoT, undockT, detailShowT, detailHideT]) if (t) clearTimeout(t)
