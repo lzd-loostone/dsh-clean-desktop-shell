@@ -464,7 +464,7 @@ function ensureApprovalWindow() {
     focusable: false,
     webPreferences: { preload: APPROVAL_PRELOAD, contextIsolation: true, nodeIntegration: false, sandbox: true },
   })
-  detailWin.setAlwaysOnTop(true, 'screen-saver')
+  makeTopmost(detailWin)
   detailWin.loadFile(APPROVAL_PAGE)
   detailWin.on('closed', () => { detailWin = null; detailOpen = false; detailSessionId = null })
   return detailWin
@@ -711,7 +711,7 @@ function createOrbWindow() {
     focusable: false, // never steals the keyboard — it is an OSD, not a dialog
     webPreferences: { preload: PRELOAD, contextIsolation: true, nodeIntegration: false, sandbox: true },
   })
-  overlayWin.setAlwaysOnTop(true, 'screen-saver')
+  makeTopmost(overlayWin)
   overlayWin.loadFile(PAGE)
   overlayWin.on('closed', () => { overlayWin = null })
   overlayWin.showInactive()
@@ -729,7 +729,7 @@ function createBubbleWindow() {
     focusable: false,
     webPreferences: { preload: BUBBLE_PRELOAD, contextIsolation: true, nodeIntegration: false, sandbox: true },
   })
-  bubbleWin.setAlwaysOnTop(true, 'screen-saver')
+  makeTopmost(bubbleWin)
   bubbleWin.loadFile(BUBBLE_PAGE)
   bubbleWin.on('closed', () => { bubbleWin = null })
   return bubbleWin
@@ -746,7 +746,7 @@ function createMenuWindow() {
     focusable: true, // it is a menu: it must take focus and close on blur
     webPreferences: { preload: MENU_PRELOAD, contextIsolation: true, nodeIntegration: false, sandbox: true },
   })
-  menuWin.setAlwaysOnTop(true, 'screen-saver')
+  makeTopmost(menuWin)
   menuWin.loadFile(MENU_PAGE)
   menuWin.on('blur', () => closeMenu())
   menuWin.on('closed', () => { menuWin = null })
@@ -769,14 +769,33 @@ function createMenuWindow() {
 // level is unchanged — no early-out — and even a window that is not focused
 // (the orb is focusable:false, so it can never get a foreground event) can be
 // re-raised this way. Electron gives us no notification that someone else
-// climbed above us, so keep the promise with a slow timer; bottom-up so the
-// bubble stays above the orb and the menu above both.
-const KEEP_TOP_MS = 1000
+// climbed above us, so keep the promise with a timer; bottom-up so the bubble
+// stays above the orb and the menu above both.
+//
+// 400 ms, not 1 s: while a foreign topmost window is above us the orb also
+// stops receiving mouse events, so a covered second reads as "pointer left"
+// and the hover-opened bubble collapses before the user ever saw it.
+const KEEP_TOP_MS = 400
 
 function keepOnTop() {
   for (const w of [overlayWin, bubbleWin, detailWin, menuWin]) {
     if (w && !w.isDestroyed() && w.isVisible()) w.setAlwaysOnTop(true, 'screen-saver')
   }
+}
+
+/**
+ * Put a fresh window in the band and keep it there whenever it appears.
+ * The timer alone is not enough for the bubble and the detail card: they are
+ * shown on demand, and setAlwaysOnTop() called right next to showInactive()
+ * runs while the window is still NOT mapped (Chromium defers the real
+ * ShowWindow) — the window then lands wherever Windows inserts a hidden-
+ * then-shown topmost window, i.e. under a fullscreen app that is already up,
+ * for up to a whole tick. The 'show' event fires after the mapping, so this
+ * is the only place that can lift a card the instant it appears.
+ */
+function makeTopmost(w) {
+  w.setAlwaysOnTop(true, 'screen-saver')
+  w.on('show', keepOnTop)
 }
 
 function startKeepOnTop() {
