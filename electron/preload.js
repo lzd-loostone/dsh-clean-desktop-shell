@@ -32,7 +32,7 @@ contextBridge.exposeInMainWorld('shellAPI', {
   chooseBackendFolder: () => ipcRenderer.send('shell:choose-backend-folder'),
   // Overlay row clicks arrive as 'shell:goto-session'; the page's client
   // plugin (dsh-clean-desktop-shell client half) listens here and routes
-  // the id to the documented ctx.sessions.open() command.
+  // the id to the documented ctx.uiWorkspace.openSession() command.
   onGotoSession: (cb) => {
     try { ipcRenderer.send('shell:trace', 'preload listener armed') } catch (e) {}
     ipcRenderer.on('shell:goto-session', (_e, id) => {

@@ -1055,7 +1055,7 @@ function focusMain(sessionId) {
   main.focus()
   if (typeof sessionId === 'string') {
     // Hand the session id to the page; the client plugin routes it to
-    // the documented ctx.sessions.open() command (see src/client.js).
+    // the documented ctx.uiWorkspace.openSession() command (see src/client.js).
     try { main.webContents.send('shell:goto-session', sessionId); trace('sent goto ' + sessionId) } catch (err) { trace('send failed: ' + (err && err.message)) }
   }
 }

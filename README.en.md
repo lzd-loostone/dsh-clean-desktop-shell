@@ -11,7 +11,7 @@ Does exactly one thing: wraps your already-configured DSH Web in a clean native 
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS-0078D6?logo=windows&logoColor=white)](https://github.com/lzd-loostone/dsh-clean-desktop-shell)
 [![License](https://img.shields.io/badge/License-MIT-22c55e)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/Icather/dsh-clean-desktop-shell?color=blue)](https://github.com/lzd-loostone/dsh-clean-desktop-shell/releases/latest)
-[![DSH](https://img.shields.io/badge/DeepSeek_Harness-0.1.1--rc.2-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness)
+[![DSH](https://img.shields.io/badge/DeepSeek_Harness-0.1.7-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness)
 [![Contributors](https://img.shields.io/github/contributors/Icather/dsh-clean-desktop-shell?color=blueviolet)](https://github.com/lzd-loostone/dsh-clean-desktop-shell/graphs/contributors)
 [![npm downloads](https://img.shields.io/npm/dt/dsh-clean-desktop-shell?logo=npm&color=cb3837&label=npm%20downloads)](https://www.npmjs.com/package/dsh-clean-desktop-shell)
 [![Installs](https://img.shields.io/github/downloads/Icather/dsh-clean-desktop-shell/total?logo=github&color=2ea043&label=installs)](https://github.com/lzd-loostone/dsh-clean-desktop-shell/releases)
@@ -30,7 +30,7 @@ Key differences from other desktop clients in the ecosystem:
 | **Form** | Standalone Electron app with its own profile | **DSH plugin** mounted into your existing profile |
 | **Profile** | New `desktop` profile, plugins/config must be reinstalled | **Reuses your web profile**, zero migration |
 | **Visual changes** | Custom title bar / frosted glass etc. | **None** — pure window shell |
-| **Upstream** | Pinned version | **Tracks 0.1.1-rc.2** |
+| **Upstream** | Pinned version | **Tracks 0.1.7** |
 
 ## Highlights
 
@@ -230,6 +230,9 @@ npm run pack    # package NSIS (Win) / DMG (mac)
 ```
 
 ## Changelog
+
+### 0.3.7
+- **Task-bubble "click to jump" fixed (DSH 0.1.7 compatibility)**: 0.1.7 moved *view selection* out of the session controller — `ClientSessions` no longer has `open()` (its type doc says *view selection remains outside the Controller*), so the plugin's `ctx.sessions.open(id)` became `is not a function`: clicking a task row raised the main window but never switched the session. The whole shell chain (bubble → IPC → preload → client plugin) was healthy; only the final API call failed — `overlay-trace.log` shows `client open failed: ctx.sessions.open is not a function`. It now uses the documented navigation face `ctx.uiWorkspace.openSession(id)`, which the `@deepseek-ai/dsh-client-ui-workspace` README defines as synchronously replacing the `mainView` reference it owns and returning the main area to the conversation; the UI reads exactly that `mainView` retention count to decide the current session (the sidebar's own row click funnels through the same entry point). The client half's `exports.inject` changes from `['sessions','uiSession']` to `['uiSession','uiWorkspace']` (cordis rejects any undeclared ctx read, and every inject entry is a required dependency). Verified that `ui-workspace` is not disabled in any of the web profile's standard / ptc / minimal presets. Unit tests updated (20/20 green).
 
 ### 0.3.6
 - **Level-1 and level-2 cards no longer fail to appear over fullscreen apps**: 0.3.5 pulled the orb back to the front of the topmost band, but the cards stayed invisible, and for a different reason — unlike the orb they are shown on demand. The moment `showInactive()` is called the window is not mapped yet (Chromium defers the real ShowWindow to the first frame), so the re-assert issued right next to it acts on a window that does not exist yet; when it does appear, Windows chooses the slot, which lands *under* the fullscreen app that is already topmost. Measured: the detail card showed at 13.4 s, ranked z=34 below the fullscreen window at z=33, and was only lifted at 14.2 s by the next tick — buried for ~750 ms; the bubble had a similar ~800 ms hole on re-show. During that window the mouse belongs to the covering app, so the orb stops receiving mousemove, `hover` reads as "pointer left", and 350 ms later `closeBubble()` fires — what the user sees is "it never opened". All four creation sites now go through `makeTopmost(w)`: set the `screen-saver` level and hook `w.on('show', keepOnTop)`, i.e. re-order bottom-up (orb -> bubble -> detail -> menu) at the instant the show actually happens; `KEEP_TOP_MS` drops from 1000 to 400 so even a foreign app raising itself costs at most 400 ms, inside what the hover relay can tolerate (the call carries NOMOVE|NOSIZE|NOACTIVATE, so no keyboard steal and no repaint). Two-process verification against the real module: orb, bubble and card driven by the repo's own `overlay.js`, a separate Electron process as the fullscreen app, z-order polled every 300 ms — both the topmost and the plain fullscreen variant, covering "show -> hide -> re-show" and "create the detail card while the fullscreen window is already up": **0/28 and 0/27 occluded samples** (the same scenarios buried 2 samples and ~750 ms before the fix).

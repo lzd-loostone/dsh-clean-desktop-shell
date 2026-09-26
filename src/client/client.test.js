@@ -51,8 +51,7 @@ function makeCtx(pendingMap) {
   return {
     opened,
     ctx: {
-      sessions: { open: (id) => opened.push(id) },
-      slots: { inject: () => {} },
+      uiWorkspace: { openSession: (id) => opened.push(id) },
       uiSession: {
         pendingInteractions: {
           getSnapshot: () => pendingMap,
@@ -70,7 +69,7 @@ function mapOf(entries) {
 
 test('bundle contract: id + inject roster', () => {
   const { exports } = boot()
-  assert.deepEqual(exports.inject, ['sessions', 'slots', 'uiSession'])
+  assert.deepEqual(exports.inject, ['uiSession', 'uiWorkspace'])
   assert.equal(typeof exports.apply, 'function')
 })
 

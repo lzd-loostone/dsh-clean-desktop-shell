@@ -11,7 +11,7 @@
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS-0078D6?logo=windows&logoColor=white)](https://github.com/lzd-loostone/dsh-clean-desktop-shell)
 [![License](https://img.shields.io/badge/License-MIT-22c55e)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/Icather/dsh-clean-desktop-shell?color=blue)](https://github.com/lzd-loostone/dsh-clean-desktop-shell/releases/latest)
-[![DSH](https://img.shields.io/badge/DeepSeek_Harness-0.1.1--rc.2-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness)
+[![DSH](https://img.shields.io/badge/DeepSeek_Harness-0.1.7-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness)
 [![Contributors](https://img.shields.io/github/contributors/Icather/dsh-clean-desktop-shell?color=blueviolet)](https://github.com/lzd-loostone/dsh-clean-desktop-shell/graphs/contributors)
 [![npm downloads](https://img.shields.io/npm/dt/dsh-clean-desktop-shell?logo=npm&color=cb3837&label=npm%20downloads)](https://www.npmjs.com/package/dsh-clean-desktop-shell)
 [![Installs](https://img.shields.io/github/downloads/Icather/dsh-clean-desktop-shell/total?logo=github&color=2ea043&label=installs)](https://github.com/lzd-loostone/dsh-clean-desktop-shell/releases)
@@ -30,7 +30,7 @@
 | **形态** | 独立 Electron 应用，自带独立 profile | **DSH 插件**，挂载进现有 profile |
 | **Profile** | 新建 desktop profile，插件/配置要重装 | **复用现有 web profile**，零迁移 |
 | **视觉改造** | 自绘标题栏 / 毛玻璃等 | **零改造**，纯净窗口壳 |
-| **跟随上游** | 固定版本 | **跟随 0.1.1-rc.2** |
+| **跟随上游** | 固定版本 | **跟随 0.1.7** |
 
 ## 核心亮点
 
@@ -211,6 +211,9 @@ npm run pack    # 打包 NSIS (Win) / DMG (mac)
 ```
 
 ## 更新历史
+
+### 0.3.7
+- **任务气泡「点击跳转会话」修复（适配 DSH 0.1.7）**：0.1.7 把「当前显示哪个会话」从会话控制器里拆了出去——`ClientSessions` 不再有 `open()`（类型注释写明 *view selection remains outside the Controller*），插件原先调的 `ctx.sessions.open(id)` 直接变成 `is not a function`，表现就是点任务行只把主窗拉到前台、会话不切换。壳侧链路（气泡 → IPC → preload → client 插件）全程正常，只有最后一步官方 API 失败：`overlay-trace.log` 里 `client open failed: ctx.sessions.open is not a function` 一行即可复现。现在改走官方导航面 `ctx.uiWorkspace.openSession(id)`——`@deepseek-ai/dsh-client-ui-workspace` 的 README 明确定义它「同步替换自己拥有的 `mainView` 引用，并把主区域切回会话」，而 UI 判断当前会话读的正是这条 `mainView` retain 计数（侧边栏自己的行点击也走同一入口）。client 半区 `exports.inject` 随之从 `['sessions','uiSession']` 调整为 `['uiSession','uiWorkspace']`（cordis 拒绝一切未声明的 ctx 属性读取，且 inject 条目全是必需依赖）。已确认 `ui-workspace` 在 web profile 的 standard / ptc / minimal 三个 preset 里都没有被禁用。单测同步更新（20/20 绿）。
 
 ### 0.3.6
 - **一级/二级气泡在全屏应用上「弹不出来」根治**：0.3.5 把悬浮球拉回置顶带前排后，卡片仍然不见——这两扇窗和球不同，是**按需显示**的。`showInactive()` 触发的那一刻窗口还没真正映射（Chromium 把 ShowWindow 推迟到首帧），紧跟着重发的那次置顶等于作用在「还不存在」的窗口上；等它真显示出来，落点由 Windows 决定，正好压在已经置顶的全屏应用**下面**。实测二级卡：13.4s 显示 → 排在 z=34（全屏窗 z=33 之下）→ 14.2s 定时周期才被抬起，整整埋了约 750ms；气泡重新显示同样有约 800ms 空窗。而这段时间鼠标被全屏应用吃掉，球收不到 mousemove，`hover` 判成「指针已离开」→ 350ms 后 `closeBubble()`，于是用户看到的就是「压根没弹出来」。现在四处创建点统一走 `makeTopmost(w)`：创建时设 `screen-saver` 级并挂 `w.on('show', keepOnTop)`——显示真正发生的那一刻立即自下而上重排（球→气泡→详情→菜单）；`KEEP_TOP_MS` 由 1000 收到 400，把「别人自己也抬了一下」造成的遮挡压到 400ms 内，短于悬停接力能容忍的时间（SetWindowPos 带 NOMOVE|NOSIZE|NOACTIVATE，不抢键盘也不重绘）。两进程真代码验证：球/气泡/详情全部由仓库 `overlay.js` 自己驱动，另一个 Electron 进程当全屏应用，300ms 轮询 EnumWindows 比较 z 序；topmost 与普通全屏各跑一轮，覆盖「显示→隐藏→再显示」和「全屏窗已存在时新建详情卡」两条路径——遮挡采样 **0/28 与 0/27**（修复前同一场景分别有 2 次采样被压住、约 750ms 埋没）。

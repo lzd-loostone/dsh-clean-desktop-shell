@@ -7,8 +7,12 @@
  *     otherwise dsh reports "loaded without registering".
  *  2. answer the task overlay's "go to this session" request: the Electron
  *     main process pushes a session id through the preload's shellAPI
- *     bridge, and we route it through the documented client command face —
- *     ctx.sessions.open(id) (api/session-controller client surface).
+ *     bridge, and we route it through the documented client navigation
+ *     face — ctx.uiWorkspace.openSession(id) (ui-workspace client surface).
+ *     DSH 0.1.7 split view selection out of the session controller:
+ *     ClientSessions lost open() ("view selection remains outside the
+ *     Controller"), and uiWorkspace now owns the mainView retention
+ *     reference that every consumer reads as "the current session".
  *  3. answer an approval from the desktop bubble: the shell pushes
  *     {sessionId, decision} through shellAPI.onApproveSession; we look the
  *     live PendingApproval up in uiSession.pendingInteractions (the same
@@ -42,7 +46,7 @@ window.__ModuleLoader__.load({
     var module = { exports: {} };
     var exports = module.exports;
     Object.defineProperty(exports, Symbol.toStringTag, { value: 'Module' });
-    exports.inject = ['sessions', 'uiSession'];
+    exports.inject = ['uiSession', 'uiWorkspace'];
     exports.apply = function (ctx) {
       var api = window.shellAPI;
       var say = function (m) { try { if (api && api.gotoTrace) api.gotoTrace(m) } catch (e) {} };
@@ -51,7 +55,7 @@ window.__ModuleLoader__.load({
         api.onGotoSession(function (id) {
           say('goto handler ' + id);
           try {
-            ctx.sessions.open(String(id));
+            ctx.uiWorkspace.openSession(String(id));
             say('opened ' + id);
           } catch (err) {
             // Unknown or archived ids fail loud by contract; the shell has
