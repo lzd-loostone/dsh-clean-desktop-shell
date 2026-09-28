@@ -633,7 +633,9 @@ function sendConfig() {
     menuWin.webContents.send('menu:config', { theme: cfg.theme, fontSize: cfg.fontSize })
   }
   if (detailWin && !detailWin.isDestroyed()) {
-    detailWin.webContents.send('approval:config', { opacity: cfg.opacity, theme: cfg.theme, fontSize: cfg.fontSize })
+    // cardMaxH lets the card bound its own content to the window cap, so the
+    // action row stays visible when the content would outgrow the card.
+    detailWin.webContents.send('approval:config', { opacity: cfg.opacity, theme: cfg.theme, fontSize: cfg.fontSize, cardMaxH: APPROVAL_H_MAX - APPROVAL_MARGIN * 2 })
   }
   if (settingsWin && !settingsWin.isDestroyed()) settingsWin.webContents.send('overlay:config', cfg)
 }

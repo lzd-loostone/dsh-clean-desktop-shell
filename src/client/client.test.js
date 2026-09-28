@@ -46,15 +46,26 @@ function makeApi() {
   }
 }
 
-function makeCtx(pendingMap) {
+/**
+ * Wrap a test's sid → pending map in the DSH 0.1.7 projection shape: the
+ * removed uiSession.pendingInteractions map is replaced by sessionStatus,
+ * whose entries carry pendingInteraction.
+ */
+function statusesOf(pendingMap) {
+  const m = new Map()
+  for (const [id, pending] of pendingMap) m.set(id, { pendingInteraction: pending })
+  return m
+}
+
+function makeCtx(pendingMap, statusMap) {
   const opened = []
   return {
     opened,
     ctx: {
       uiWorkspace: { openSession: (id) => opened.push(id) },
       uiSession: {
-        pendingInteractions: {
-          getSnapshot: () => pendingMap,
+        sessionStatus: {
+          getSnapshot: () => statusMap || statusesOf(pendingMap),
           subscribe: () => () => {},
         },
       },
@@ -132,9 +143,9 @@ test('branded-key miss falls back to scanning values by sessionId', () => {
   const pending = { kind: 'approval', sessionId: 'S3', answer: (d) => { answered.push(d); return Promise.resolve() } }
   const fakeMap = {
     get: () => undefined, // exact key lookup misses, like a branded identity key
-    values: () => [pending][Symbol.iterator](),
+    values: () => [{ pendingInteraction: pending }][Symbol.iterator](),
   }
-  const { ctx } = makeCtx(fakeMap)
+  const { ctx } = makeCtx(null, fakeMap)
   b.exports.apply(ctx)
   api.listeners.approve({ sessionId: 'S3', decision: 'allow' })
   assert.deepEqual(answered, ['allowed-once'])
@@ -160,6 +171,17 @@ test('malformed payloads are dropped', () => {
   assert.doesNotThrow(() => api.listeners.approve(null))
   assert.doesNotThrow(() => api.listeners.approve({ sessionId: '', decision: 'allow' }))
   assert.doesNotThrow(() => api.listeners.approve({ sessionId: 'x' })) // no decision → allow path with pending lookup
+})
+
+test('sessionStatus without a pendingInteraction → ignored (idle session)', () => {
+  const api = makeApi()
+  const b = boot()
+  b.setShellApi(api)
+  const { ctx } = makeCtx(new Map([['S1', null]]))
+  // a status row that is present but idle: { pendingInteraction: undefined }
+  ctx.uiSession.sessionStatus.getSnapshot = () => new Map([['S1', {}]])
+  b.exports.apply(ctx)
+  assert.doesNotThrow(() => api.listeners.approve({ sessionId: 'S1', decision: 'allow' }))
 })
 
 test('goto channel still works (regression)', () => {
@@ -299,8 +321,8 @@ test('answer branded-key miss falls back to values scan', () => {
     questions: [{ id: 'q1', question: 'x', options: [{ label: 'A' }] }],
     answer: (a) => { calls.push(a); return Promise.resolve() },
   }
-  const fakeMap = { get: () => undefined, values: () => [pending][Symbol.iterator]() }
-  const { ctx } = makeCtx(fakeMap)
+  const fakeMap = { get: () => undefined, values: () => [{ pendingInteraction: pending }][Symbol.iterator]() }
+  const { ctx } = makeCtx(null, fakeMap)
   b.exports.apply(ctx)
   api.listeners.answer({ sessionId: 'S8', answers: [{ id: 'q1', selected: ['A'] }] })
   assert.equal(calls.length, 1)

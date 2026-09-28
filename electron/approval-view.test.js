@@ -4,9 +4,11 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import {
   APPROVAL_W,
   APPROVAL_GAP,
+  APPROVAL_MARGIN,
   APPROVAL_H_MIN,
   APPROVAL_H_MAX,
   pickApprovalInfo,
@@ -88,6 +90,25 @@ test('bounds: y aligns near bubble top, never above work area, fits height', () 
 test('bounds: height clamped to min/max', () => {
   assert.equal(computeApprovalBounds(BUB_RIGHT, 10, WA, 'right').height, APPROVAL_H_MIN)
   assert.equal(computeApprovalBounds(BUB_RIGHT, 9999, WA, 'right').height, APPROVAL_H_MAX)
+})
+
+// The card reports its own height through approval:size, which is only
+// honest while the card is content-sized: a card stretched to the window
+// makes its single flexible child (.body) absorb the slack, so the sum of the
+// children always equals the window's own height and the card never grows.
+const CARD_HTML = readFileSync(new URL('./approval.html', import.meta.url), 'utf8')
+
+test('card is content-sized, so its self-measurement is real', () => {
+  const rule = CARD_HTML.match(/\.card \{[^}]*\}/)[0]
+  assert.match(rule, /bottom: auto/)
+})
+
+test('card height cap mirrors APPROVAL_H_MAX minus the margin ring', () => {
+  assert.match(CARD_HTML, new RegExp('var cardMaxH = ' + (APPROVAL_H_MAX - APPROVAL_MARGIN * 2) + '\\b'))
+})
+
+test('overflowing content is absorbed by the flexible body, not clipped', () => {
+  assert.match(CARD_HTML, /body\.style\.maxHeight = over > 0/)
 })
 
 test('age label: seconds, minutes, hours, guards', () => {

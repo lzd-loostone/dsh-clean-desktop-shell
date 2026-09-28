@@ -38,7 +38,12 @@
     -webkit-font-smoothing: antialiased;
   }
   .card {
-    position: absolute; inset: 10px;
+    /* Content-sized: keeping bottom:auto lets the card grow with its content
+       so measure() reports a REAL height. While it was stretched to the
+       window, the one flexible child (.body) absorbed the slack and the
+       reported height always equalled the window's own — the card could
+       never grow. The body caps itself + scrolls when content overflows. */
+    position: absolute; inset: 10px; bottom: auto;
     background: var(--card-bg);
     border: 1px solid var(--card-border);
     border-radius: 14px;
@@ -169,6 +174,10 @@
   var sigPrev = ''        // sessionId+sinceTs+kind：同一请求的重复推送不重置作答状态
   var page = 0            // 提问翻页游标
   var ans = {}            // pageId -> {selected:[labels], custom:'text'}
+  // Card height cap, mirroring the shell's window cap (approval-view.js
+  // APPROVAL_H_MAX 420) minus the 2 x 10px transparent margin ring; the live
+  // value arrives through approval:config before the first measurement.
+  var cardMaxH = 400
 
   function $(id) { return document.getElementById(id) }
 
@@ -368,11 +377,23 @@
     act({ id: cur.sessionId, action: action })
   }
 
-  function measure() {
-    var card = $('card')
+  function sumKids(card) {
     var hh = 0
     var kids = card.children
     for (var k = 0; k < kids.length; k++) hh += kids[k].offsetHeight
+    return hh
+  }
+
+  // Report the card's intrinsic content height (the card is content-sized,
+  // see .card). Content taller than the shell's window cap is absorbed by
+  // the flexible body instead, so the action row is never pushed out of view.
+  function measure() {
+    var card = $('card')
+    var hh = sumKids(card)
+    var over = hh - cardMaxH
+    var body = $('body')
+    body.style.maxHeight = over > 0 ? Math.max(40, body.offsetHeight - over) + 'px' : ''
+    if (over > 0) hh = sumKids(card)
     try { window.approvalAPI.size(Math.ceil(hh) + 2) } catch (err) {}
   }
 
@@ -438,6 +459,7 @@
   window.approvalAPI.onConfig(function (c) {
     document.documentElement.style.setProperty('--alpha', String(c.opacity))
     document.documentElement.style.setProperty('--fs', (c.fontSize || 13) + 'px')
+    if (Number.isFinite(c.cardMaxH) && c.cardMaxH > 0) cardMaxH = c.cardMaxH
     document.body.classList.toggle('light', c.theme === 'light')
   })
   window.approvalAPI.ready()

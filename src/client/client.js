@@ -15,14 +15,20 @@
  *     reference that every consumer reads as "the current session".
  *  3. answer an approval from the desktop bubble: the shell pushes
  *     {sessionId, decision} through shellAPI.onApproveSession; we look the
- *     live PendingApproval up in uiSession.pendingInteractions (the same
- *     map the in-app approval card settles from) and call its public
- *     answer() — byte-for-byte equivalent to clicking the in-app card,
- *     which then disappears through the very same promise.
+ *     live PendingApproval up through the session-status projection (the
+ *     same instance the in-app approval card settles from) and call its
+ *     public answer() — byte-for-byte equivalent to clicking the in-app
+ *     card, which then disappears through the very same promise.
  *  3b. answer a user question (or plan review) from the same card: the
  *     shell pushes {sessionId, answers} through shellAPI.onAnswerQuestion;
  *     we validate the batch against the live PendingQuestion.questions and
  *     call its public answer().
+ *     DSH 0.1.7 REMOVED uiSession.pendingInteractions. The pending request
+ *     of a session now lives on the status projection:
+ *     uiSession.sessionStatus.getSnapshot() is a ReadonlyMap of
+ *     SessionId → { pendingInteraction } carrying the highest-precedence
+ *     interaction awaiting the user — for every session, not just the main
+ *     view, which is what lets the bubble answer a background session.
  *
  * The caption safe area (native window buttons + drag band floating over
  * the page top) is NOT handled here anymore: the shell's preload reserves
@@ -77,25 +83,35 @@ window.__ModuleLoader__.load({
         });
       }
       /**
+       * The live pending interaction of one session, or null. Reads the
+       * 0.1.7 session-status projection: statuses are keyed by SessionId and
+       * each carries the request currently awaiting the user. SessionId keys
+       * are plain strings at runtime, but a branded implementation detail
+       * must not break the feature, so an exact get() miss falls back to a
+       * sessionId scan of the small map.
+       */
+      function pendingFor(sid) {
+        var map = ctx.uiSession.sessionStatus.getSnapshot();
+        var hit = map.get(sid);
+        if (hit && hit.pendingInteraction) return hit.pendingInteraction;
+        if (typeof map.values !== 'function') return null;
+        var it = map.values();
+        for (;;) {
+          var step = it.next();
+          if (step.done) return null;
+          var p = step.value && step.value.pendingInteraction;
+          if (p && String(p.sessionId) === sid) return p;
+        }
+      }
+      /**
        * Settle the effective PendingApproval of one session from a shell
-       * bubble decision. SessionId keys are plain strings at runtime, but a
-       * branded implementation detail must not break the feature, so an
-       * exact get() miss falls back to a sessionId scan of the small map.
+       * bubble decision.
        */
       function answerApproval(msg) {
         var sid = msg && msg.sessionId != null ? String(msg.sessionId) : '';
         var decision = msg && msg.decision === 'reject' ? 'rejected' : 'allowed-once';
         if (!sid) { say('approve: no session id'); return; }
-        var map = ctx.uiSession.pendingInteractions.getSnapshot();
-        var pending = map.get(sid);
-        if (!pending && typeof map.values === 'function') {
-          var it = map.values();
-          for (;;) {
-            var step = it.next();
-            if (step.done) break;
-            if (step.value && String(step.value.sessionId) === sid) { pending = step.value; break; }
-          }
-        }
+        var pending = pendingFor(sid);
         if (!pending) { say('approve: nothing pending for ' + sid); return; }
         if (pending.kind !== 'approval') { say('approve: pending is ' + pending.kind + ', not approval'); return; }
         var answered = pending.answer(decision);
@@ -115,16 +131,7 @@ window.__ModuleLoader__.load({
         var sid = msg && msg.sessionId != null ? String(msg.sessionId) : '';
         if (!sid) { say('answer: no session id'); return; }
         if (!Array.isArray(msg.answers) || msg.answers.length === 0) { say('answer: no answers'); return; }
-        var map = ctx.uiSession.pendingInteractions.getSnapshot();
-        var pending = map.get(sid);
-        if (!pending && typeof map.values === 'function') {
-          var it = map.values();
-          for (;;) {
-            var step = it.next();
-            if (step.done) break;
-            if (step.value && String(step.value.sessionId) === sid) { pending = step.value; break; }
-          }
-        }
+        var pending = pendingFor(sid);
         if (!pending) { say('answer: nothing pending for ' + sid); return; }
         if (pending.kind !== 'question' && pending.kind !== 'plan-review') { say('answer: pending is ' + pending.kind + ', not question'); return; }
         var qs = pending.questions;
