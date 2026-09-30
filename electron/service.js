@@ -15,6 +15,7 @@ import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { loadConfig, DEFAULT_TARGET_URL } from './config.js'
 import { probe } from './probe.js'
+import { parseReadyUrl } from './ready-line.js'
 
 // The local backend endpoint — derived from the shared default, never a
 // duplicated literal.
@@ -125,7 +126,11 @@ export async function start({ backendPath } = {}) {
 
   let spawned = null
   try {
-    spawned = spawn(command, [...resolved.args, 'web'], {
+    // --no-open: dsh 0.2.0 opens the default browser by default (web-app
+    // Config openBrowser), so every tray restart of the backend popped a
+    // browser tab too. Unknown flags are ignored by the CLI, so dsh
+    // versions that do not know the flag are unaffected.
+    spawned = spawn(command, [...resolved.args, 'web', '--no-open'], {
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
       shell: isCmd,
@@ -184,15 +189,19 @@ export async function start({ backendPath } = {}) {
 
     const onData = () => {
       const text = stdout + stderr
-      // Capture the full printed root URL including any query (dsh 0.1.2+
-      // carries its one-time launch token there). The optional tail keeps
-      // pre-0.1.2 bare `http://127.0.0.1:<port>` lines working unchanged.
-      const m = text.match(/http:\/\/127\.0\.0\.1:\d+(?:\/[^\s"')]*[^\s"')]?)?/)
-      if (m && startResolver) {
+      // Only dsh's OWN ready line may set the window target. Plugins print
+      // their own loopback URLs while they load (billion-context pins its
+      // model channel to a random local port) and dsh 0.2.0 announces its own
+      // URL only after every plugin has settled — so "the first loopback URL
+      // in the output" adopted a plugin panel as the window target: the shell
+      // showed that page, or went offline when the plugin's ephemeral port
+      // died, although dsh was listening. ready-line.js owns that rule.
+      const url = parseReadyUrl(text, DEFAULT_PORT)
+      if (url && startResolver) {
         clearTimeout(timer)
         const r = startResolver
         startResolver = null
-        authenticatedUrl = m[0]
+        authenticatedUrl = url
         setStatus('running')
         r.resolve(authenticatedUrl)
       }
