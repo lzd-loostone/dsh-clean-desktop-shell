@@ -21,7 +21,7 @@ Does exactly one thing: wraps your already-configured DSH Web in a clean native 
 
 ## What is this
 
-`dsh-clean-desktop-shell` is a **DSH-plugin-shaped clean desktop shell**: it wraps an already-running DSH Web (default `http://127.0.0.1:3080`) in a native desktop window — system tray, single instance, so it behaves like any normal desktop app. **No visual changes at all**: no frosted glass, no skinning — purely a window shell.
+`dsh-clean-desktop-shell` is a **desktop companion shipped as a DSH plugin**. It does not take over your browser: it only adds the two things a web page cannot do — a **system tray** (backend state and start/stop) and an **edge-docked task bubble** (the whale orb: hover to see every session and approve / answer / jump straight from it). The DSH page itself stays in your own browser; no window is created for it, and no visual changes are made.
 
 Key differences from other desktop clients in the ecosystem:
 
@@ -29,45 +29,33 @@ Key differences from other desktop clients in the ecosystem:
 |:--|:--|:--|
 | **Form** | Standalone Electron app with its own profile | **DSH plugin** mounted into your existing profile |
 | **Profile** | New `desktop` profile, plugins/config must be reinstalled | **Reuses your web profile**, zero migration |
-| **Visual changes** | Custom title bar / frosted glass etc. | **None** — pure window shell |
-| **Upstream** | Pinned version | **Tracks 0.1.7** |
+| **Where the page lives** | Inside a window it renders itself | **Your browser** — the shell renders nothing |
+| **Upstream** | Pinned version | **Tracks 0.1.7+** |
 
 ## Highlights
 
-**① One-click launch — like double-clicking a normal desktop app**
+**① Task bubble — handle waiting work without switching windows**
 
-No terminal, no commands. **Double-click the desktop shortcut and the DSH window opens instantly**, just like launching any normal app:
+- The whale orb docks half-hidden on a screen edge; touching that edge opens the task bubble
+- One row per session: running / needs approval / needs an answer / done (unread dot)
+- Click a row to jump to the session; approve or reject from the card; answer questions right there
+- Hovering an "needs approval" row shows a detail card (tool, reason, waiting time, queue depth)
 
-- The installer creates the desktop shortcut automatically; the plugin form asks on first run, plus a one-click "create desktop shortcut" in the tray
-- Shows immediately on double-click — never waits for the backend
-- Single instance: a second double-click just focuses the existing window
+**② Backend state and controls live in the tray**
 
-**② Live backend monitoring · quick manual start/stop**
-
-The tray **shows the backend state in real time** (running / starting / stopped / error) with one-click controls:
-
-- **Live monitoring**: the window keeps probing the backend; the moment it is killed, crashes or is stopped, the window flips to the offline screen — a stale page never fakes "still alive"
-- **Auto-reconnect**: the instant the backend recovers, the window reloads the real page by itself
-- **Quick start/stop**: one-click start / restart / stop from the tray (with progress dialogs); "stop backend" really shuts the service down on 3080, including externally started instances
+- The tray shows the backend state in real time (running / starting / stopped / error)
+- One-click start / restart / stop (with progress dialogs); "stop backend" really shuts the service down on 3080, including externally started instances
+- Auto-detect backend · set the backend install folder · check for updates · repo homepage
 
 ## Usage
 
-1. If the plugin is installed, launching `dsh` from the command line pops up the desktop window automatically; you can also double-click the desktop shortcut created by the plugin — on par with a native desktop app.
-2. Everything from the original web UI works as-is.
-3. Detailed settings live in the tray right-click menu. The main window adds no controls of its own, keeping the page clean.
+1. Start `dsh web`; the tray icon and the whale orb appear. Keep using DSH in your browser as usual.
+2. Click the tray (or "open DSH page" in its menu) to open DSH in your default browser at any time.
+3. Bubble actions **apply to the page that is already open**: with a page open they take effect immediately; with none open, the bubble opens your browser so the action can be completed there.
 
-**All backend controls live in the tray** — the main window stays a pure shell:
+**How it reaches the page**: the plugin registers two local routes on DSH's own web server — `/dsh-clean-desktop-shell/events` (SSE, subscribed by the page) and `/dsh-clean-desktop-shell/decide` (token-gated POST, sent by the shell). No second browser, no extra renderer.
 
-- Start / restart / stop the backend (with progress dialogs; stopping really shuts down the service on 3080, including externally started instances)
-- Auto-detect backend · set the backend install folder (auto-detect default)
-- Reload window · create desktop shortcut · check for updates · repo homepage
-
-**Window reliability (Edge-style instant refresh):**
-
-- Shows immediately on launch, never waits for the backend
-- While the backend is down, a local "backend offline" screen is shown and re-probed; the real page loads automatically the moment it answers
-- The instant the backend stops (tray stop, kill or crash) the window flips back to the offline screen — a stale page never fakes "still alive"
-- The offline screen has self-service buttons: reload / start backend / auto-detect backend / set backend install folder
+**The honest limit**: the action happens in the browser, so the shell can switch the page **to a session**, but it cannot bring the browser window **to the front** — that belongs to the browser.
 
 ## macOS status (v0.1.7 important note)
 
@@ -145,7 +133,7 @@ The installer **creates a desktop shortcut automatically** and provides the full
 dsh plugin --profile web add dsh-clean-desktop-shell
 ```
 
-Restart `dsh web` and the desktop shell window **opens automatically** (the first run prepares the Electron runtime over the network, ~1-2 minutes).
+Restart `dsh web` and the tray icon plus the task bubble **appear automatically** (the first run prepares the Electron runtime over the network, ~1-2 minutes).
 
 > Option 2 gives you a shell that launches alongside DSH: the window is spawned by the plugin when `dsh web` starts, with **no standalone installer / desktop icon**. For a double-clickable app with a desktop shortcut and auto-update, use Option 1. The core window experience is identical either way.
 
@@ -188,35 +176,35 @@ Unblock-File -Path "$env:USERPROFILE\Downloads\DSH-Clean-Desktop-Shell-Setup-*.e
 ## Architecture
 
 ```
-        ┌────────────── Core (dsh web / headless service) ──────────────┐
-        │    Sessions · Agent · Plugins · Memory live here,            │
-        │    decoupled from the UI                                     │
-        └───────────────────────────┬───────────────────────────────────┘
-                                    │  http://127.0.0.1:3080 (or remote)
-                                    ▼
-        ┌───────────────────────────────────────────────────────────┐
-        │            dsh-clean-desktop-shell (Electron shell)       │
-        │      tray · single-instance · offline auto-reconnect      │
-        │      · desktop shortcut                                    │
-        │                                                           │
-        │    One shell codebase, two distribution forms:            │
-        │     ├─ Installer: standalone exe, auto-update             │
-        │     └─ Plugin: auto-pops on dsh web start                 │
-        │        (self-managed Electron runtime)                     │
+        ┌────────── Your browser (the DSH page, unchanged) ─────────┐
+        │   sessions · approvals · questions · input  live here      │
+        │   client half: same-origin EventSource for decisions       │
+        └───────────────────┬───────────────────────────────────────┘
+                            │  GET  /dsh-clean-desktop-shell/events   (SSE)
+                            │  POST /dsh-clean-desktop-shell/decide   (token)
+        ┌───────────────────▼───────────────────────────────────────┐
+        │              Core (dsh web / headless service)             │
+        │   sessions · agents · plugins · memory · web server         │
+        └───────────────────▲───────────────────────────────────────┘
+                            │  state snapshot file · same HTTP server
+        ┌───────────────────┴───────────────────────────────────────┐
+        │           dsh-clean-desktop-shell (Electron shell)         │
+        │   tray · task bubble · backend control · progress (no win) │
         └───────────────────────────────────────────────────────────┘
 ```
 
-- **Shell / core separation**: the shell handles only the window, tray and backend management; sessions, agents, plugins and memory all live in the core, decoupled from the UI.
-- **Default**: loads the local `127.0.0.1:3080` (your configured web profile, zero migration).
-- **Remote-capable**: configure any remote DSH address; the shell is just a window. Phones / Linux / other devices can reach the core via browser or PWA — the shell is never bound to a local service.
+- **Shell / page separation**: the shell handles only the tray, the task bubble and backend management; the page stays in the browser and the shell renders nothing.
+- **State goes down a file, actions go up over HTTP**: the host half atomically writes the session snapshot to `$DSH_HOME/desktop-shell-state.json` (the shell only reads it) and the shell POSTs actions back to the route the host registered.
+- **Default**: local `127.0.0.1:3080` (your configured web profile, zero migration).
+- **Remote-capable**: point it at any remote DSH address; tray and bubble keep working and the page opens on your own device.
 - **One shell codebase, two distribution forms**: the installer (standalone exe) and the plugin (launches with `dsh web`) share the same `electron/` code — only the runtime source and launch differ (see Install).
 
 ## Platform matrix
 
 | Platform | Shell | Status |
 |:--|:--|:--|
-| Windows | ✅ Electron (frameless + native window buttons) | Released (NSIS installer) |
-| macOS | ✅ Electron (hiddenInset) | Released (CI builds Intel + Apple Silicon DMG) |
+| Windows | ✅ Tray + task bubble (no main window) | Released (NSIS installer) |
+| macOS | ✅ Tray + task bubble (no main window) | Released (CI builds Intel + Apple Silicon DMG) |
 | Linux | — (browser / PWA to the core) | Not planned |
 | Termux / phone / tablet | — (headless / PWA to the core) | Covered by remote core access |
 
@@ -230,6 +218,12 @@ npm run pack    # package NSIS (Win) / DMG (mac)
 ```
 
 ## Changelog
+
+### 0.4.0
+
+- **Main window shell removed**: the DSH page lives in your own browser again. The shell no longer renders it — one less full renderer process, and one less page shell to maintain (offline screen, watchdog, link window and caption safe area are all gone).
+- **Bubble actions now loop back through the browser**: the host half adds `/dsh-clean-desktop-shell/events` (SSE) and `/dsh-clean-desktop-shell/decide` (token-gated POST) to DSH's own web server; the page listens with a same-origin EventSource and still settles everything through the official APIs. With no page open, the browser is opened for you.
+- **Tray's first item is now "Open DSH page"** (same for a left click on the orb); window-only entries such as "reload window" and "create desktop shortcut" are gone.
 
 ### 0.3.7
 - **Task-bubble "click to jump" fixed (DSH 0.1.7 compatibility)**: 0.1.7 moved *view selection* out of the session controller — `ClientSessions` no longer has `open()` (its type doc says *view selection remains outside the Controller*), so the plugin's `ctx.sessions.open(id)` became `is not a function`: clicking a task row raised the main window but never switched the session. The whole shell chain (bubble → IPC → preload → client plugin) was healthy; only the final API call failed — `overlay-trace.log` shows `client open failed: ctx.sessions.open is not a function`. It now uses the documented navigation face `ctx.uiWorkspace.openSession(id)`, which the `@deepseek-ai/dsh-client-ui-workspace` README defines as synchronously replacing the `mainView` reference it owns and returning the main area to the conversation; the UI reads exactly that `mainView` retention count to decide the current session (the sidebar's own row click funnels through the same entry point). The client half's `exports.inject` changes from `['sessions','uiSession']` to `['uiSession','uiWorkspace']` (cordis rejects any undeclared ctx read, and every inject entry is a required dependency). Verified that `ui-workspace` is not disabled in any of the web profile's standard / ptc / minimal presets. Unit tests updated (20/20 green).

@@ -3,10 +3,8 @@
  *
  * Fields:
  *  - targetUrl:    DEFAULT_TARGET_URL — set to any remote DSH address to
- *                  run the shell as a pure window.
- *  - closeToTray:  default true.
+ *                  open DSH there instead of the local backend.
  *  - backendPath:  folder containing the dsh CLI (tray "set backend folder").
- *  - shortcutAsked: true once the first-run shortcut prompt was shown.
  *
  * Persistence is atomic (tmp file + rename) and load-time type-checked, so
  * a crash mid-write or a hand-edited file can never poison the shell.
@@ -22,11 +20,7 @@ export const DEFAULT_TARGET_URL = 'http://127.0.0.1:3080'
 
 const DEFAULTS = {
   targetUrl: DEFAULT_TARGET_URL,
-  closeToTray: true,
   backendPath: null,
-  // True once the first-run "create a desktop shortcut?" prompt was shown
-  // (so it never nags again). The tray item stays available regardless.
-  shortcutAsked: false,
   // Task overlay (edge-docked whale orb + hover session bubble).
   //  side: docked edge 'left'|'right'; anchorY: orb top y (null → near top).
   overlay: {
@@ -62,9 +56,7 @@ export function loadConfig() {
     // (e.g. the never-wired `windowMode`) are dropped on the next save.
     cached = { ...DEFAULTS }
     if (typeof parsed.targetUrl === 'string' && parsed.targetUrl) cached.targetUrl = parsed.targetUrl
-    if (typeof parsed.closeToTray === 'boolean') cached.closeToTray = parsed.closeToTray
     if (typeof parsed.backendPath === 'string' || parsed.backendPath === null) cached.backendPath = parsed.backendPath
-    if (typeof parsed.shortcutAsked === 'boolean') cached.shortcutAsked = parsed.shortcutAsked
     // Overlay: per-field validated; anything unknown falls back to the
     // default. A hand-corrupted file can never poison the overlay.
     if (parsed.overlay && typeof parsed.overlay === 'object') {

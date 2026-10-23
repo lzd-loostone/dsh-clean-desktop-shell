@@ -1,16 +1,13 @@
 import { app } from 'electron'
 
 /**
- * AppUserModelID, shared by main (process-level), window (taskbar button)
- * and shortcut (Start-menu .lnk) so the three always agree.
+ * AppUserModelID — process-level Windows identity.
  *
- * Why plugin mode gets its own ID: Windows caches the taskbar button icon
- * per AUMID. If the plugin shell reuses the installer's ID that ever ran
- * with Electron's default icon (an early dev launch / an old build), the
- * taskbar keeps showing that stale icon — no window `icon`, `setAppDetails`
- * or exe patch can override the cache. A distinct ID makes Windows treat it
- * as a brand-new app and re-read the icon. It also keeps the plugin shell
- * from merging with an installed copy on the same machine.
+ * There is no main window to stamp any more, but the ID still decides how
+ * Windows groups our process and attributes notifications. Why plugin mode
+ * gets its own: Windows caches per-AUMID state (taskbar icon included), so
+ * the plugin shell must not merge with an installed copy on the same machine
+ * — nor inherit a stale icon from an early dev launch.
  */
 export const APP_USER_MODEL_ID = app.isPackaged
   ? 'com.icather.dsh-clean-desktop-shell'

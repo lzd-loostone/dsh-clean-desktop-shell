@@ -21,7 +21,7 @@
  * config.overlay: { enabled, opacity, theme, fontSize, side, anchorY, pos,
  *                   orbSize, bubbleTimeout, edgeSnap }
  */
-import { app, ipcMain, screen } from 'electron'
+import { app, BrowserWindow, ipcMain, screen } from 'electron'
 import { existsSync, readFileSync, unwatchFile, watchFile, appendFileSync, statSync, rmSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -31,7 +31,8 @@ import { getStatus } from './service.js'
 import { startBackend, restartBackend, stopBackend } from './backend-actions.js'
 import { createReadStore } from './read-store.js'
 import { orbArea as orbAreaOf, orbWinX as orbWinXOf, orbWinY as orbWinYOf } from './orb-geometry.js'
-import { DshWindow } from './link-window.js'
+import { sendDecision } from './bridge.js'
+import { openDsh } from './open-dsh.js'
 import {
   pickApprovalInfo,
   computeApprovalBounds,
@@ -89,7 +90,6 @@ let bubbleWin = null
 let menuWin = null
 let settingsWin = null
 let detailWin = null // approval hover card (side-mounted beside the bubble)
-let getMainWindow = null
 let watching = false
 let ipcReady = false
 let snap = null
@@ -455,7 +455,7 @@ function detailHeightFor() {
 
 function ensureApprovalWindow() {
   if (detailWin && !detailWin.isDestroyed()) return detailWin
-  detailWin = new DshWindow({
+  detailWin = new BrowserWindow({
     ...winBase(),
     width: APPROVAL_W,
     height: APPROVAL_EST_H + APPROVAL_MARGIN * 2,
@@ -704,7 +704,7 @@ function createOrbWindow() {
   docked = cfg.edgeSnap
   const wa = waFor()
   const s = orbArea(cfg)
-  overlayWin = new DshWindow({
+  overlayWin = new BrowserWindow({
     ...winBase(),
     width: s,
     height: s,
@@ -722,7 +722,7 @@ function createOrbWindow() {
 
 function createBubbleWindow() {
   if (bubbleWin && !bubbleWin.isDestroyed()) return bubbleWin
-  bubbleWin = new DshWindow({
+  bubbleWin = new BrowserWindow({
     ...winBase(),
     width: BUBBLE_CARD_W + BUB_MARGIN * 2,
     height: BUBBLE_H_MIN + BUB_MARGIN * 2,
@@ -739,7 +739,7 @@ function createBubbleWindow() {
 
 function createMenuWindow() {
   if (menuWin && !menuWin.isDestroyed()) return menuWin
-  menuWin = new DshWindow({
+  menuWin = new BrowserWindow({
     ...winBase(),
     width: MENU_W,
     height: 200,
@@ -843,9 +843,11 @@ function registerIpc() {
     const action = payload && payload.action
     if (typeof id !== 'string' || !id || typeof action !== 'string') return
     if (action === 'detail') {
+      // The card itself no longer has a window to jump to; the browser is
+      // where the full conversation (and the native approval control) lives.
       trace('approval-detail ' + id)
       closeBubble()
-      focusMain(id)
+      openDsh()
       return
     }
     if (action === 'want-input') {
@@ -857,29 +859,12 @@ function registerIpc() {
       return
     }
     if (action === 'answer') {
-      const main = getMainWindow && getMainWindow()
-      if (!main || main.isDestroyed()) { trace('answer dropped: no main window'); return }
       if (!Array.isArray(payload.answers) || payload.answers.length === 0) { trace('answer dropped: no answers'); return }
-      try {
-        main.webContents.send('shell:answer-question', { sessionId: id, answers: payload.answers })
-        trace('sent answer x' + payload.answers.length + ' ' + id)
-      } catch (err) {
-        trace('answer send failed: ' + (err && err.message))
-      }
+      deliver({ type: 'answer', sessionId: id, answers: payload.answers })
       return
     }
     if (action !== 'allow' && action !== 'reject') return
-    const main = getMainWindow && getMainWindow()
-    if (!main || main.isDestroyed()) {
-      trace('approve dropped: no main window (' + action + ')')
-      return
-    }
-    try {
-      main.webContents.send('shell:approve-session', { sessionId: id, decision: action })
-      trace('sent approve ' + action + ' ' + id)
-    } catch (err) {
-      trace('approve send failed: ' + (err && err.message))
-    }
+    deliver({ type: 'approve', sessionId: id, decision: action })
   })
 
   ipcMain.on('approval:size', (_e, h) => {
@@ -949,7 +934,7 @@ function registerIpc() {
     if (!dragMoved) {
       trace('orb-click')
       if (bubbleOpen) closeBubble()
-      focusMain()
+      openDsh()
       return
     }
     if (cfg.edgeSnap) {
@@ -980,7 +965,7 @@ function registerIpc() {
       unread.delete(id)
     }
     closeBubble()
-    focusMain(id)
+    if (typeof id === 'string' && id) deliver({ type: 'goto', sessionId: id })
   })
 
   // 「一键清除」: acknowledge every done row at once (same effect as clicking
@@ -995,8 +980,8 @@ function registerIpc() {
   })
 
   ipcMain.on('bubble:blank', () => {
+    // Nothing behind the card any more — closing it is the whole action.
     closeBubble()
-    focusMain()
   })
 
   // The card page measures its own content and reports the needed height,
@@ -1036,10 +1021,8 @@ function registerIpc() {
 
   ipcMain.on('menu:action', (_e, id) => {
     closeMenu()
-    if (id === 'refresh') {
-      const main = getMainWindow && getMainWindow()
-      if (main && !main.isDestroyed()) main.webContents.reload()
-    } else if (id === 'start') startBackend()
+    if (id === 'open') openDsh()
+    else if (id === 'start') startBackend()
     else if (id === 'restart') restartBackend()
     else if (id === 'stop') stopBackend()
     else if (id === 'settings') openOverlaySettings()
@@ -1048,25 +1031,28 @@ function registerIpc() {
   ipcMain.on('menu:close', () => closeMenu())
 }
 
-/** Raise and focus the main window; optionally route to a session. */
-function focusMain(sessionId) {
-  const main = getMainWindow && getMainWindow()
-  if (!main || main.isDestroyed()) return
-  if (main.isMinimized()) main.restore()
-  main.show()
-  main.focus()
-  if (typeof sessionId === 'string') {
-    // Hand the session id to the page; the client plugin routes it to
-    // the documented ctx.uiWorkspace.openSession() command (see src/client.js).
-    try { main.webContents.send('shell:goto-session', sessionId); trace('sent goto ' + sessionId) } catch (err) { trace('send failed: ' + (err && err.message)) }
-  }
+/**
+ * Send one decision frame to the open page(s).
+ *
+ * The window that used to carry these actions is gone: each one is now a
+ * frame on the loop-back route, and the page half settles the real object
+ * (see src/client/client.js). With nobody listening there is only one place
+ * left where the action can be completed — the browser.
+ */
+function deliver(payload) {
+  sendDecision(payload).then((n) => {
+    trace('deliver ' + payload.type + ' → ' + n + ' page(s)')
+    if (!n) {
+      trace(payload.type + ': nobody listening, opening browser')
+      openDsh()
+    }
+  })
 }
 
 // ---------- public API ----------
 
-/** Wire the overlay to the app; call once from main after windows exist. */
-export function initOverlay({ getMainWindow: provider }) {
-  getMainWindow = provider
+/** Wire the overlay to the app; call once from main after the app is ready. */
+export function initOverlay() {
   registerIpc()
   startKeepOnTop()
 }
@@ -1126,7 +1112,7 @@ export function openOverlaySettings() {
     settingsWin.focus()
     return settingsWin
   }
-  settingsWin = new DshWindow({
+  settingsWin = new BrowserWindow({
     width: 344,
     height: 480,
     show: false,

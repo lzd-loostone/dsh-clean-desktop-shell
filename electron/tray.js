@@ -1,14 +1,15 @@
 /**
- * System tray: window show/hide, backend management, auto-launch, quit.
+ * System tray: open DSH in the browser, backend management, quit.
  *
- * All backend controls live here (tray only) — the main window stays a
- * pure shell with no backend chrome. The lifecycle actions themselves are
- * shared with the orb context menu via backend-actions.js.
+ * All controls live here (tray only) — there is no shell window to show.
+ * The lifecycle actions themselves are shared with the orb context menu via
+ * backend-actions.js.
  */
 import { Tray, Menu, dialog, nativeImage } from 'electron'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { loadConfig, saveConfig, loadOverlay, saveOverlay } from './config.js'
+import { openDsh } from './open-dsh.js'
 import { applyOverlayConfig, openOverlaySettings, resetOverlayPosition } from './overlay.js'
 import { startBackend, restartBackend, stopBackend } from './backend-actions.js'
 import {
@@ -19,7 +20,6 @@ import {
   onStatusChange,
 } from './service.js'
 import { checkForUpdatesAuto, openRepo } from './update.js'
-import { shortcutSupported, createDesktopShortcut } from './shortcut.js'
 
 const trayIconPath = join(
   fileURLToPath(new URL('.', import.meta.url)),
@@ -34,14 +34,14 @@ const trayIconPath = join(
 let trayInstance = null
 let handlers = null
 
-export function createTray({ onShow, onReload, onQuit }) {
+export function createTray({ onOpen, onQuit }) {
   const icon = nativeImage.createFromPath(trayIconPath)
 
-  handlers = { onShow, onReload, onQuit }
+  handlers = { onOpen, onQuit }
 
   trayInstance = new Tray(icon)
   trayInstance.setToolTip('DSH Clean Desktop Shell')
-  trayInstance.on('click', onShow)
+  trayInstance.on('click', onOpen)
 
   // Keep the menu in sync whenever the backend state machine changes
   // (starting → running / error / stopped happens asynchronously).
@@ -54,38 +54,12 @@ export function createTray({ onShow, onReload, onQuit }) {
 /** Rebuild the context menu (call after backend state changes). */
 export function refreshTrayMenu() {
   if (!trayInstance || !handlers) return
-  const { onShow, onReload, onQuit } = handlers
+  const { onOpen, onQuit } = handlers
   const st = getStatus()
   const label = statusLabel(st)
 
   const menu = Menu.buildFromTemplate([
-    { label: '显示 / 打开窗口', click: onShow },
-    {
-      label: '刷新窗口',
-      click: onReload,
-    },
-    // Windows-only: desktop .lnk shortcut. Hidden on other platforms instead of
-    // disabled so the menu stays relevant to the OS it is running on.
-    {
-      label: '创建桌面快捷方式',
-      visible: shortcutSupported(),
-      click: async () => {
-        const ok = await createDesktopShortcut()
-        if (ok) {
-          dialog.showMessageBoxSync({
-            type: 'info',
-            title: '已创建',
-            message: '桌面快捷方式已创建。',
-          })
-        } else {
-          dialog.showMessageBoxSync({
-            type: 'warning',
-            title: '创建失败',
-            message: '无法创建桌面快捷方式，请稍后重试。',
-          })
-        }
-      },
-    },
+    { label: '打开 DSH 网页', click: onOpen },
     {
       label: '任务悬浮窗',
       submenu: [
@@ -171,20 +145,11 @@ function statusLabel(st) {
 }
 
 /**
- * Start the backend with a progress window. Kept as the tray-flavored
- * export for the offline screen (window.js); the shared implementation
- * lives in backend-actions.js.
- */
-export async function startBackendWithProgress() {
-  return startBackend()
-}
-
-/**
  * Pick the dsh install folder via a native dialog (auto-detect default).
- * Shared by the tray menu and the offline screen. Saves the choice to
- * config and validates that a dsh executable exists inside.
+ * Saves the choice to config and validates that a dsh executable exists
+ * inside.
  */
-export async function chooseBackendFolder() {
+async function chooseBackendFolder() {
   const config = loadConfig()
   const detected = await detectInstallFolder()
   const defaultFolder = detected || config.backendPath || undefined

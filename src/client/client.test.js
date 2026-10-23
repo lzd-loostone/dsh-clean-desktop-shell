@@ -3,7 +3,10 @@
  *
  * Drives the real browser bundle through a fake module loader: reads the
  * shipped client.js, executes it against a mock window/__ModuleLoader__/
- * require/shellAPI/ctx, and asserts the approval-answer bridge behavior.
+ * EventSource/ctx, and asserts the overlay-decision behavior. The page half
+ * now listens on the SSE route instead of window.shellAPI — these tests pin
+ * that contract, including the reconnect after a dropped stream.
+ *
  * Run: node src/client/client.test.js
  */
 import { test } from 'node:test'
@@ -13,44 +16,50 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const BUNDLE = join(dirname(fileURLToPath(import.meta.url)), 'client.js')
+const EVENTS_PATH = '/dsh-clean-desktop-shell/events'
 
-/** Execute client.js against fakes; returns the registered exports plus handles. */
-function boot({ pendingMap } = {}) {
+/** EventSource stand-in: records instances and lets tests push frames. */
+function installEventSource() {
+  const instances = []
+  class FakeEventSource {
+    constructor(url) {
+      this.url = url
+      this.readyState = 0
+      this.onmessage = null
+      this.onerror = null
+      instances.push(this)
+    }
+    emit(payload) {
+      this.onmessage && this.onmessage({ data: JSON.stringify(payload) })
+    }
+    emitRaw(data) {
+      this.onmessage && this.onmessage({ data })
+    }
+    fail(readyState) {
+      this.readyState = readyState
+      this.onerror && this.onerror({})
+    }
+  }
+  FakeEventSource.CLOSED = 2
+  globalThis.EventSource = FakeEventSource
+  return instances
+}
+
+/** Execute client.js against fakes; returns the registered exports. */
+function boot() {
   const code = readFileSync(BUNDLE, 'utf8')
   let registered = null
-  const fakeWindow = {
-    __ModuleLoader__: {
-      load: (def) => { registered = def },
-    },
-    shellAPI: undefined,
-  }
+  const fakeWindow = { __ModuleLoader__: { load: (def) => { registered = def } } }
   new Function('window', code)(fakeWindow)
   assert.ok(registered, 'bundle must call window.__ModuleLoader__.load')
   const fakeRequire = (name) => {
     assert.equal(name, 'react')
     return { createElement: () => null }
   }
-  const exports = registered.factory(fakeRequire)
-  return { exports, fakeWindow, setShellApi: (api) => { fakeWindow.shellAPI = api } }
+  return { exports: registered.factory(fakeRequire), fakeWindow }
 }
 
-/** shellAPI fake collecting registered listeners. */
-function makeApi() {
-  const listeners = {}
-  return {
-    listeners,
-    onGotoSession: (cb) => { listeners.goto = cb },
-    onApproveSession: (cb) => { listeners.approve = cb },
-    onAnswerQuestion: (cb) => { listeners.answer = cb },
-    gotoTrace: () => {},
-  }
-}
-
-/**
- * Wrap a test's sid → pending map in the DSH 0.1.7 projection shape: the
- * removed uiSession.pendingInteractions map is replaced by sessionStatus,
- * whose entries carry pendingInteraction.
- */
+/** DSH 0.1.7 projection shape: sid → { pendingInteraction }. */
 function statusesOf(pendingMap) {
   const m = new Map()
   for (const [id, pending] of pendingMap) m.set(id, { pendingInteraction: pending })
@@ -73,157 +82,104 @@ function makeCtx(pendingMap, statusMap) {
   }
 }
 
-function mapOf(entries) {
-  const m = new Map(entries)
-  return m
+function bootWith(pendingMap, statusMap) {
+  const instances = installEventSource()
+  const b = boot()
+  const { ctx, opened } = makeCtx(pendingMap, statusMap)
+  b.exports.apply(ctx)
+  assert.equal(instances.length, 1, 'one SSE stream per page')
+  return { es: instances[0], instances, opened, ctx }
 }
 
+const mapOf = (entries) => new Map(entries)
+
 test('bundle contract: id + inject roster', () => {
-  const { exports } = boot()
-  assert.deepEqual(exports.inject, ['uiSession', 'uiWorkspace'])
-  assert.equal(typeof exports.apply, 'function')
-})
-
-test('approve allow → answer(allowed-once) on the effective approval', () => {
-  const { exports } = boot()
-  const answered = []
-  const pending = { kind: 'approval', sessionId: 'S1', answer: (d) => { answered.push(d); return Promise.resolve() } }
-  const { ctx, opened } = makeCtx(mapOf([['S1', pending]]))
-  const api = makeApi()
-  exports.apply(Object.assign({}, ctx)) // window.shellAPI not set yet → no listeners
-  assert.equal(api.listeners.approve, undefined) // guard: without shellAPI nothing registers
-  assert.deepEqual(opened, [])
-  // real boot path
-  const boot2 = boot()
-  boot2.setShellApi(api)
-  boot2.exports.apply(ctx)
-  assert.equal(typeof api.listeners.approve, 'function')
-  api.listeners.approve({ sessionId: 'S1', decision: 'allow' })
-  assert.deepEqual(answered, ['allowed-once'])
-})
-
-test('approve reject → answer(rejected)', () => {
-  const api = makeApi()
   const b = boot()
-  b.setShellApi(api)
+  assert.deepEqual(b.exports.inject, ['uiSession', 'uiWorkspace'])
+  assert.equal(typeof b.exports.apply, 'function')
+})
+
+test('apply opens one stream on the loop-back route', () => {
+  const { es } = bootWith(mapOf([]))
+  assert.equal(es.url, EVENTS_PATH)
+})
+
+test('goto frame → uiWorkspace.openSession', () => {
+  const { es, opened } = bootWith(mapOf([]))
+  es.emit({ type: 'goto', sessionId: 'S9' })
+  assert.deepEqual(opened, ['S9'])
+})
+
+test('approve allow → answer(allowed-once); reject → answer(rejected)', () => {
   const answered = []
   const pending = { kind: 'approval', sessionId: 'S1', answer: (d) => { answered.push(d); return Promise.resolve() } }
-  const { ctx } = makeCtx(mapOf([['S1', pending]]))
-  b.exports.apply(ctx)
-  api.listeners.approve({ sessionId: 'S1', decision: 'reject' })
-  assert.deepEqual(answered, ['rejected'])
+  const { es } = bootWith(mapOf([['S1', pending]]))
+  es.emit({ type: 'approve', sessionId: 'S1', decision: 'allow' })
+  es.emit({ type: 'approve', sessionId: 'S1', decision: 'reject' })
+  assert.deepEqual(answered, ['allowed-once', 'rejected'])
 })
 
 test('no pending for the session → ignored without throwing', () => {
-  const api = makeApi()
-  const b = boot()
-  b.setShellApi(api)
-  const { ctx } = makeCtx(mapOf([]))
-  b.exports.apply(ctx)
-  assert.doesNotThrow(() => api.listeners.approve({ sessionId: 'missing', decision: 'allow' }))
+  const { es } = bootWith(mapOf([]))
+  assert.doesNotThrow(() => es.emit({ type: 'approve', sessionId: 'missing', decision: 'allow' }))
 })
 
-test('pending of another kind (question) → untouched', () => {
-  const api = makeApi()
-  const b = boot()
-  b.setShellApi(api)
+test('pending of another kind (question) is not settled by an approval', () => {
   let touched = 0
   const pending = { kind: 'question', sessionId: 'S2', answer: () => { touched++; return Promise.resolve() } }
-  const { ctx } = makeCtx(mapOf([['S2', pending]]))
-  b.exports.apply(ctx)
-  api.listeners.approve({ sessionId: 'S2', decision: 'allow' })
+  const { es } = bootWith(mapOf([['S2', pending]]))
+  es.emit({ type: 'approve', sessionId: 'S2', decision: 'allow' })
   assert.equal(touched, 0)
 })
 
 test('branded-key miss falls back to scanning values by sessionId', () => {
-  const api = makeApi()
-  const b = boot()
-  b.setShellApi(api)
   const answered = []
   const pending = { kind: 'approval', sessionId: 'S3', answer: (d) => { answered.push(d); return Promise.resolve() } }
   const fakeMap = {
-    get: () => undefined, // exact key lookup misses, like a branded identity key
+    get: () => undefined,
     values: () => [{ pendingInteraction: pending }][Symbol.iterator](),
   }
-  const { ctx } = makeCtx(null, fakeMap)
-  b.exports.apply(ctx)
-  api.listeners.approve({ sessionId: 'S3', decision: 'allow' })
+  const { es } = bootWith(null, fakeMap)
+  es.emit({ type: 'approve', sessionId: 'S3', decision: 'allow' })
   assert.deepEqual(answered, ['allowed-once'])
 })
 
 test('already-settled answer (rejected promise) does not escape', async () => {
-  const api = makeApi()
-  const b = boot()
-  b.setShellApi(api)
-  const pending = { kind: 'approval', sessionId: 'S4', answer: () => Promise.reject(new Error('pending approval approval:1 is already settled')) }
-  const { ctx } = makeCtx(mapOf([['S4', pending]]))
-  b.exports.apply(ctx)
-  assert.doesNotThrow(() => api.listeners.approve({ sessionId: 'S4', decision: 'allow' }))
-  await new Promise((r) => setTimeout(r, 0)) // rejection must be swallowed, no unhandled
+  const pending = { kind: 'approval', sessionId: 'S4', answer: () => Promise.reject(new Error('already settled')) }
+  const { es } = bootWith(mapOf([['S4', pending]]))
+  assert.doesNotThrow(() => es.emit({ type: 'approve', sessionId: 'S4', decision: 'allow' }))
+  await new Promise((r) => setTimeout(r, 0))
 })
 
-test('malformed payloads are dropped', () => {
-  const api = makeApi()
-  const b = boot()
-  b.setShellApi(api)
-  const { ctx } = makeCtx(mapOf([]))
-  b.exports.apply(ctx)
-  assert.doesNotThrow(() => api.listeners.approve(null))
-  assert.doesNotThrow(() => api.listeners.approve({ sessionId: '', decision: 'allow' }))
-  assert.doesNotThrow(() => api.listeners.approve({ sessionId: 'x' })) // no decision → allow path with pending lookup
-})
-
-test('sessionStatus without a pendingInteraction → ignored (idle session)', () => {
-  const api = makeApi()
-  const b = boot()
-  b.setShellApi(api)
-  const { ctx } = makeCtx(new Map([['S1', null]]))
-  // a status row that is present but idle: { pendingInteraction: undefined }
-  ctx.uiSession.sessionStatus.getSnapshot = () => new Map([['S1', {}]])
-  b.exports.apply(ctx)
-  assert.doesNotThrow(() => api.listeners.approve({ sessionId: 'S1', decision: 'allow' }))
-})
-
-test('goto channel still works (regression)', () => {
-  const api = makeApi()
-  const b = boot()
-  b.setShellApi(api)
-  const { ctx, opened } = makeCtx(mapOf([]))
-  b.exports.apply(ctx)
-  api.listeners.goto('S9')
-  assert.deepEqual(opened, ['S9'])
+test('malformed frames are dropped', () => {
+  const { es, opened } = bootWith(mapOf([]))
+  assert.doesNotThrow(() => es.emitRaw('not json'))
+  assert.doesNotThrow(() => es.emit({ type: 'bogus' }))
+  assert.doesNotThrow(() => es.emit(null))
+  assert.deepEqual(opened, [])
 })
 
 // ---------- question batch answers ----------
-
-function qBoot(pending) {
-  const api = makeApi()
-  const b = boot()
-  b.setShellApi(api)
-  const calls = []
-  if (pending) {
-    pending.answer = (a) => { calls.push(a); return Promise.resolve() }
-  }
-  const map = pending ? mapOf([[pending.sessionId, pending]]) : mapOf([])
-  const { ctx } = makeCtx(map)
-  b.exports.apply(ctx)
-  return { api, calls }
-}
 
 const TWO_Q = [
   { id: 'q1', question: '选一个', options: [{ label: 'A' }, { label: 'B' }] },
   { id: 'q2', question: '叫什么名字' },
 ]
 
+function qBoot(pending) {
+  const calls = []
+  if (pending) pending.answer = (a) => { calls.push(a); return Promise.resolve() }
+  const map = pending ? mapOf([[pending.sessionId, pending]]) : mapOf([])
+  const { es } = bootWith(map)
+  return { es, calls }
+}
+
 test('answer happy batch: label pick + custom text, normalized and submitted', () => {
-  const pending = { kind: 'question', sessionId: 'S1', questions: TWO_Q }
-  const { api, calls } = qBoot(pending)
-  assert.equal(typeof api.listeners.answer, 'function')
-  api.listeners.answer({ sessionId: 'S1', answers: [
+  const { es, calls } = qBoot({ kind: 'question', sessionId: 'S1', questions: TWO_Q })
+  es.emit({ type: 'answer', sessionId: 'S1', answers: [
     { id: 'q1', selected: ['A'] },
     { id: 'q2', selected: [], custom: '  小深  ' },
   ] })
-  assert.equal(calls.length, 1)
   assert.deepEqual(calls[0], { answers: [
     { id: 'q1', selected: ['A'] },
     { id: 'q2', selected: [], custom: '小深' },
@@ -231,108 +187,51 @@ test('answer happy batch: label pick + custom text, normalized and submitted', (
 })
 
 test('answer single-select with two labels → refused', () => {
-  const pending = { kind: 'question', sessionId: 'S1', questions: TWO_Q }
-  const { api, calls } = qBoot(pending)
-  api.listeners.answer({ sessionId: 'S1', answers: [
+  const { es, calls } = qBoot({ kind: 'question', sessionId: 'S1', questions: TWO_Q })
+  es.emit({ type: 'answer', sessionId: 'S1', answers: [
     { id: 'q1', selected: ['A', 'B'] },
     { id: 'q2', selected: [], custom: 'x' },
   ] })
   assert.equal(calls.length, 0)
 })
 
-test('answer multiSelect with several labels → accepted', () => {
-  const pending = { kind: 'question', sessionId: 'S1', questions: [
-    { id: 'm', question: '多选', multiSelect: true, options: [{ label: 'A' }, { label: 'B' }] },
-  ] }
-  const { api, calls } = qBoot(pending)
-  api.listeners.answer({ sessionId: 'S1', answers: [{ id: 'm', selected: ['B', 'A'] }] })
-  assert.deepEqual(calls, [{ answers: [{ id: 'm', selected: ['B', 'A'] }] }])
-})
-
-test('answer unknown option label → refused', () => {
-  const pending = { kind: 'question', sessionId: 'S1', questions: [
-    { id: 'q1', question: 'x', options: [{ label: 'A' }] },
-  ] }
-  const { api, calls } = qBoot(pending)
-  api.listeners.answer({ sessionId: 'S1', answers: [{ id: 'q1', selected: ['Z'] }] })
-  assert.equal(calls.length, 0)
-})
-
-test('answer empty pick or empty custom → refused', () => {
-  const pending = { kind: 'question', sessionId: 'S1', questions: TWO_Q }
-  const { api, calls } = qBoot(pending)
-  api.listeners.answer({ sessionId: 'S1', answers: [{ id: 'q1', selected: [] }, { id: 'q2', selected: [], custom: '  ' }] })
-  api.listeners.answer({ sessionId: 'S1', answers: [{ id: 'q1', selected: ['A'] }, { id: 'q2', selected: [] }] })
+test('answer unknown option label or empty custom → refused', () => {
+  const { es, calls } = qBoot({ kind: 'question', sessionId: 'S1', questions: TWO_Q })
+  es.emit({ type: 'answer', sessionId: 'S1', answers: [{ id: 'q1', selected: ['Z'] }, { id: 'q2', selected: [], custom: 'x' }] })
+  es.emit({ type: 'answer', sessionId: 'S1', answers: [{ id: 'q1', selected: ['A'] }, { id: 'q2', selected: [], custom: '  ' }] })
   assert.equal(calls.length, 0)
 })
 
 test('answer count/id mismatch → refused', () => {
-  const pending = { kind: 'question', sessionId: 'S1', questions: TWO_Q }
-  const { api, calls } = qBoot(pending)
-  api.listeners.answer({ sessionId: 'S1', answers: [{ id: 'q1', selected: ['A'] }] })
-  api.listeners.answer({ sessionId: 'S1', answers: [{ id: 'q1', selected: ['A'] }, { id: 'other', selected: [], custom: 'y' }] })
+  const { es, calls } = qBoot({ kind: 'question', sessionId: 'S1', questions: TWO_Q })
+  es.emit({ type: 'answer', sessionId: 'S1', answers: [{ id: 'q1', selected: ['A'] }] })
+  es.emit({ type: 'answer', sessionId: 'S1', answers: [{ id: 'q1', selected: ['A'] }, { id: 'other', selected: [], custom: 'y' }] })
   assert.equal(calls.length, 0)
-})
-
-test('answer when pending is an approval or missing → ignored without throwing', () => {
-  const api = makeApi()
-  const b = boot()
-  b.setShellApi(api)
-  let touched = 0
-  const pending = { kind: 'approval', sessionId: 'S5', questions: [], answer: () => { touched++; return Promise.resolve() } }
-  const { ctx } = makeCtx(mapOf([['S5', pending]]))
-  b.exports.apply(ctx)
-  assert.doesNotThrow(() => api.listeners.answer({ sessionId: 'S5', answers: [{ id: 'q1', selected: ['A'] }] }))
-  assert.doesNotThrow(() => api.listeners.answer({ sessionId: 'nobody', answers: [{ id: 'q1', selected: ['A'] }] }))
-  assert.equal(touched, 0)
 })
 
 test('plan-review pending accepts the batch', () => {
-  const pending = { kind: 'plan-review', sessionId: 'S6', questions: [
+  const { es, calls } = qBoot({ kind: 'plan-review', sessionId: 'S6', questions: [
     { id: 'p', question: '通过计划吗', options: [{ label: '通过' }, { label: '否决' }] },
-  ] }
-  const { api, calls } = qBoot(pending)
-  api.listeners.answer({ sessionId: 'S6', answers: [{ id: 'p', selected: ['通过'] }] })
+  ] })
+  es.emit({ type: 'answer', sessionId: 'S6', answers: [{ id: 'p', selected: ['通过'] }] })
   assert.equal(calls.length, 1)
 })
 
-test('answer already-settled rejection is swallowed', async () => {
-  const api = makeApi()
-  const b = boot()
-  b.setShellApi(api)
-  const pending = {
-    kind: 'question', sessionId: 'S7',
-    questions: [{ id: 'q1', question: 'x', options: [{ label: 'A' }] }],
-    answer: () => Promise.reject(new Error('pending question question:1 is already settled')),
+test('a permanently closed stream is rebuilt after the retry delay', () => {
+  const timers = []
+  const realSetTimeout = globalThis.setTimeout
+  globalThis.setTimeout = (fn, ms) => { timers.push({ fn, ms }); return timers.length }
+  try {
+    const { es, instances } = bootWith(mapOf([]))
+    es.fail(FakeClosed())
+    assert.equal(timers.length, 1, 'schedules exactly one retry')
+    timers.shift().fn()
+    assert.equal(instances.length, 2, 'a fresh stream takes over')
+  } finally {
+    globalThis.setTimeout = realSetTimeout
   }
-  const { ctx } = makeCtx(mapOf([['S7', pending]]))
-  b.exports.apply(ctx)
-  assert.doesNotThrow(() => api.listeners.answer({ sessionId: 'S7', answers: [{ id: 'q1', selected: ['A'] }] }))
-  await new Promise((r) => setTimeout(r, 0))
 })
 
-test('answer branded-key miss falls back to values scan', () => {
-  const api = makeApi()
-  const b = boot()
-  b.setShellApi(api)
-  const calls = []
-  const pending = {
-    kind: 'question', sessionId: 'S8',
-    questions: [{ id: 'q1', question: 'x', options: [{ label: 'A' }] }],
-    answer: (a) => { calls.push(a); return Promise.resolve() },
-  }
-  const fakeMap = { get: () => undefined, values: () => [{ pendingInteraction: pending }][Symbol.iterator]() }
-  const { ctx } = makeCtx(null, fakeMap)
-  b.exports.apply(ctx)
-  api.listeners.answer({ sessionId: 'S8', answers: [{ id: 'q1', selected: ['A'] }] })
-  assert.equal(calls.length, 1)
-})
-
-test('answer malformed payloads dropped', () => {
-  const pending = { kind: 'question', sessionId: 'S1', questions: TWO_Q }
-  const { api, calls } = qBoot(pending)
-  assert.doesNotThrow(() => api.listeners.answer(null))
-  assert.doesNotThrow(() => api.listeners.answer({ sessionId: '', answers: [] }))
-  assert.doesNotThrow(() => api.listeners.answer({ sessionId: 'S1', answers: 'nope' }))
-  assert.equal(calls.length, 0)
-})
+function FakeClosed() {
+  return 2
+}

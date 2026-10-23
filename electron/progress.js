@@ -13,8 +13,8 @@
  * appears. Terminal 'ok'/'error' states still show immediately because the
  * user must see the outcome of a slow or failed operation.
  */
+import { BrowserWindow } from 'electron'
 import { fileURLToPath } from 'node:url'
-import { DshWindow } from './link-window.js'
 
 const PRELOAD = fileURLToPath(new URL('./progress-preload.js', import.meta.url))
 const PAGE = fileURLToPath(new URL('./progress.html', import.meta.url))
@@ -50,7 +50,7 @@ function scheduleShow(now) {
 /** Show (or update) the progress window. */
 export function showProgress({ title, message, state = 'busy' }) {
   if (!win || win.isDestroyed()) {
-    win = new DshWindow({
+    win = new BrowserWindow({
       width: 420,
       height: 128,
       frame: false,

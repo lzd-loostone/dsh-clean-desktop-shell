@@ -4,19 +4,20 @@
  * Shell/core decoupling:
  *  - default target: http://127.0.0.1:3080 (existing web profile, zero migration)
  *  - configurable remote target (settings file)
- *  - local backend auto-start on launch; full manual control from the tray
+ *  - local backend detection on launch; full manual control from the tray
  *
- * The main window is a pure shell — all backend controls live in the tray.
+ * There is no application window here any more. The shell is a tray icon
+ * plus the task bubble; DSH itself lives in the user's browser, which is
+ * where every "open" action leads (see open-dsh.js).
  */
-import { app, BrowserWindow, dialog, Menu, nativeImage } from 'electron'
+import { app, Menu, nativeImage } from 'electron'
 import { fileURLToPath } from 'node:url'
-import { createMainWindow, reloadWindow } from './window.js'
 import { createTray, refreshTrayMenu } from './tray.js'
-import { loadConfig, saveConfig, DEFAULT_TARGET_URL } from './config.js'
-import { detect, getAuthenticatedUrl } from './service.js'
+import { loadConfig, DEFAULT_TARGET_URL } from './config.js'
+import { detect } from './service.js'
 import { setupAutoUpdater } from './update.js'
 import { initOverlay, applyOverlayConfig, disposeOverlay } from './overlay.js'
-import { shortcutSupported, hasDesktopShortcut, createDesktopShortcut, ensureStartMenuShortcut } from './shortcut.js'
+import { openDsh } from './open-dsh.js'
 import { APP_USER_MODEL_ID } from './aumid.js'
 import { setupCrashGuard } from './crashGuard.js'
 
@@ -54,46 +55,22 @@ if (isMac && !app.isPackaged) {
 // no matter how the shell was launched.
 app.setName('DSH Clean Desktop Shell')
 
-/** Single instance: a second launch just focuses the existing window. */
+/** Single instance: a second launch just reopens DSH in the browser. */
 const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) {
   app.quit()
 } else {
-  let mainWindow = null
   let tray = null
 
   app.on('second-instance', () => {
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore()
-      mainWindow.focus()
-    }
+    openDsh()
   })
-
-  async function createWindow() {
-    const config = loadConfig()
-    const target = config.targetUrl || DEFAULT_TARGET_URL
-
-    mainWindow = createMainWindow({ target })
-    mainWindow.on('closed', () => {
-      mainWindow = null
-    })
-    mainWindow.on('close', (event) => {
-      // Close hides to tray unless we are actually quitting. Read the
-      // config fresh so a runtime change to closeToTray takes effect.
-      if (!app.isQuitting && loadConfig().closeToTray !== false) {
-        event.preventDefault()
-        mainWindow?.hide()
-      }
-    })
-
-    return mainWindow
-  }
 
   /**
    * Launch-time backend detection. Detects whether a local dsh web is
-   * already running so the tray and window reflect the real state, but
-   * never auto-starts it — starting is a manual action (tray menu or the
-   * offline screen button) so it cannot fight an explicit "stop".
+   * already running so the tray reflects the real state, but never
+   * auto-starts it — starting is a manual action (tray menu) so it cannot
+   * fight an explicit "stop".
    */
   async function bootstrapBackend() {
     const config = loadConfig()
@@ -107,32 +84,6 @@ if (!gotLock) {
     refreshTrayMenu()
   }
 
-  /**
-   * First-run desktop shortcut prompt (Windows packaged apps only).
-   * Asks once; the tray "create desktop shortcut" item stays available
-   * forever, so saying no is never a dead end.
-   */
-  async function ensureShortcut() {
-    if (!shortcutSupported() || loadConfig().shortcutAsked) return
-    saveConfig({ ...loadConfig(), shortcutAsked: true })
-    if (await hasDesktopShortcut()) return
-    const choice = dialog.showMessageBoxSync({
-      type: 'question',
-      title: '创建桌面快捷方式？',
-      message: '是否在桌面创建「DSH Clean Desktop Shell」快捷方式？',
-      detail: '选择「跳过」也不影响使用——之后可随时在托盘右键菜单中一键添加。',
-      buttons: ['创建', '跳过'],
-      defaultId: 0,
-      cancelId: 1,
-    })
-    if (choice === 0) {
-      const ok = await createDesktopShortcut()
-      if (!ok) {
-        dialog.showErrorBox('创建快捷方式失败', '无法在桌面创建快捷方式。可稍后在托盘右键菜单中重试。')
-      }
-    }
-  }
-
   app.whenReady().then(async () => {
     // No File/Edit/View application menu anywhere (the stock menu was also
     // what popped up over Electron's default child windows). Windows/Linux:
@@ -141,21 +92,9 @@ if (!gotLock) {
     // its system menu by convention (the app menu lives outside our windows
     // there and carries the standard roles).
     if (!isMac) Menu.setApplicationMenu(null)
-    await createWindow()
+
     tray = createTray({
-      onShow: () => {
-        if (!mainWindow) return createWindow()
-        mainWindow.show()
-        mainWindow.focus()
-      },
-      onReload: () => {
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          // Prefer the live launch-token URL from the last shell-started
-          // backend; a manual refresh is exactly when a stale config target
-          // (or a bare pre-0.1.2 loopback URL) would 401.
-          reloadWindow(mainWindow, getAuthenticatedUrl() || loadConfig().targetUrl || DEFAULT_TARGET_URL)
-        }
-      },
+      onOpen: () => openDsh(),
       onQuit: () => {
         app.isQuitting = true
         app.quit()
@@ -163,32 +102,18 @@ if (!gotLock) {
     })
 
     // Task overlay (GPU-monitor style always-on-top session card). Its only
-    // input is the host plugin's state file — nothing to wire here beyond
-    // the main-window provider used by row clicks.
-    initOverlay({ getMainWindow: () => mainWindow })
+    // input is the host plugin's state file; its three actions travel over
+    // the host's loop-back route (bridge.js) — nothing to wire here.
+    initOverlay()
     applyOverlayConfig()
 
-    // Backend bootstrap in background (never delays the window).
+    // Backend bootstrap in background (never delays the tray).
     bootstrapBackend().catch(() => {})
 
     // Windows: wire the auto-updater (downloads new installers silently).
     setupAutoUpdater()
 
-    // Windows: ensure the AUMID-carrying Start-menu shortcut exists so the
-    // taskbar button shows our icon (see shortcut.js). Best-effort.
-    try {
-      ensureStartMenuShortcut()
-    } catch {
-      // non-fatal
-    }
-
-    // First run: offer a desktop shortcut (never nags twice).
-    ensureShortcut().catch(() => {})
-
-    app.on('activate', () => {
-      if (BrowserWindow.getAllWindows().length === 0) createWindow()
-      else mainWindow?.show()
-    })
+    app.on('activate', () => openDsh())
   })
 
   app.on('window-all-closed', () => {

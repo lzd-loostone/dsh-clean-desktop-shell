@@ -18,6 +18,7 @@ const pairs = [
   ['src/host/icon.js', 'lib/icon.js'],
   ['src/host/session-events.js', 'lib/session-events.js'],
   ['src/host/approval-details.js', 'lib/approval-details.js'],
+  ['src/host/bridge.js', 'lib/bridge.js'],
   ['src/host/question-details.js', 'lib/question-details.js'],
   ['src/client/client.js', 'lib/client.js'],
 ]
