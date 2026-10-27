@@ -156,6 +156,26 @@ test('non-POST and malformed payloads are rejected', async () => {
   dispose()
 })
 
+test('reload is accepted without a session id and broadcast', async () => {
+  const home = tmpHome()
+  const server = fakeServer()
+  const dispose = startBridge(server, { home })
+  const token = JSON.parse(readFileSync(bridgeFilePath(home), 'utf8')).token
+  const a = await connect(server)
+
+  const res = fakeRes()
+  server.handler('exact', DECIDE_PATH)(
+    fakeReq({ method: 'POST', headers: { 'x-shell-token': token }, body: JSON.stringify({ type: 'reload' }) }),
+    res,
+  )
+  await settle()
+
+  assert.equal(res.statusCode, 200)
+  assert.deepEqual(JSON.parse(res.body), { delivered: 1 })
+  assert.ok(a.body.includes('data: {"type":"reload"}'))
+  dispose()
+})
+
 test('dispose closes SSE clients and removes the token file', async () => {
   const home = tmpHome()
   const server = fakeServer()

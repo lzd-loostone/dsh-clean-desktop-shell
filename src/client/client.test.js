@@ -46,10 +46,10 @@ function installEventSource() {
 }
 
 /** Execute client.js against fakes; returns the registered exports. */
-function boot() {
+function boot(overrides) {
   const code = readFileSync(BUNDLE, 'utf8')
   let registered = null
-  const fakeWindow = { __ModuleLoader__: { load: (def) => { registered = def } } }
+  const fakeWindow = Object.assign({ __ModuleLoader__: { load: (def) => { registered = def } } }, overrides)
   new Function('window', code)(fakeWindow)
   assert.ok(registered, 'bundle must call window.__ModuleLoader__.load')
   const fakeRequire = (name) => {
@@ -82,9 +82,9 @@ function makeCtx(pendingMap, statusMap) {
   }
 }
 
-function bootWith(pendingMap, statusMap) {
+function bootWith(pendingMap, statusMap, overrides) {
   const instances = installEventSource()
-  const b = boot()
+  const b = boot(overrides)
   const { ctx, opened } = makeCtx(pendingMap, statusMap)
   b.exports.apply(ctx)
   assert.equal(instances.length, 1, 'one SSE stream per page')
@@ -108,6 +108,13 @@ test('goto frame → uiWorkspace.openSession', () => {
   const { es, opened } = bootWith(mapOf([]))
   es.emit({ type: 'goto', sessionId: 'S9' })
   assert.deepEqual(opened, ['S9'])
+})
+
+test('reload frame → location.reload', () => {
+  let reloaded = 0
+  const { es } = bootWith(mapOf([]), undefined, { location: { reload: () => { reloaded++ } } })
+  es.emit({ type: 'reload' })
+  assert.equal(reloaded, 1)
 })
 
 test('approve allow → answer(allowed-once); reject → answer(rejected)', () => {

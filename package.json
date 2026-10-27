@@ -72,6 +72,10 @@
     "appId": "com.icather.dsh-clean-desktop-shell",
     "productName": "DSH Clean Desktop Shell",
     "asar": true,
+    "asarUnpack": [
+      "node_modules/koffi/**",
+      "node_modules/@koromix/koffi-*/**"
+    ],
     "files": [
       "electron/**/*",
       "!electron/**/*.test.js",
@@ -122,6 +126,7 @@
   },
   "dependencies": {
     "electron-updater": "^6.8.9",
+    "koffi": "^3.3.4",
     "semver": "^7.7.2"
   },
   "desktopShell": {

@@ -14,7 +14,7 @@ import { createServer } from 'node:http'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { sendDecision } from './bridge.js'
+import { sendDecision, deliverWithRetry } from './bridge.js'
 
 /** Run a throwaway server; handler decides the response. */
 function serve(handler) {
@@ -70,4 +70,44 @@ test('server rejection (403) → 0 without throwing', async () => {
   installHandshake(srv.url, 'wrong')
   assert.equal(await sendDecision({ type: 'approve', sessionId: 'S1', decision: 'allow' }), 0)
   await srv.close()
+})
+
+test('deliverWithRetry opens the app once and retries until a page answers', async () => {
+  let opened = 0
+  const counts = [0, 0, 1]
+  const send = async () => counts.shift() ?? 0
+  const got = await deliverWithRetry({ type: 'goto', sessionId: 'S1' }, {
+    open: async () => { opened++ }, send, intervalMs: 0, sleep: async () => {},
+  })
+  assert.equal(got, 1)
+  assert.equal(opened, 1)
+})
+
+test('deliverWithRetry brings the window forward before sending', async () => {
+  const order = []
+  const got = await deliverWithRetry({ type: 'goto', sessionId: 'S1' }, {
+    forward: async () => { order.push('forward') },
+    send: async () => { order.push('send'); return 1 },
+    sleep: async () => {},
+  })
+  assert.equal(got, 1)
+  assert.deepEqual(order, ['forward', 'send'])
+})
+
+test('a failing forward still delivers the frame', async () => {
+  const got = await deliverWithRetry({ type: 'goto', sessionId: 'S1' }, {
+    forward: async () => { throw new Error('no window') },
+    send: async () => 1,
+    sleep: async () => {},
+  })
+  assert.equal(got, 1)
+})
+
+test('deliverWithRetry gives up after the attempt budget', async () => {
+  let sent = 0
+  const got = await deliverWithRetry({ type: 'goto', sessionId: 'S1' }, {
+    open: async () => {}, send: async () => { sent++; return 0 }, attempts: 3, sleep: async () => {},
+  })
+  assert.equal(got, 0)
+  assert.equal(sent, 3)
 })

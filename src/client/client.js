@@ -147,6 +147,13 @@ window.__ModuleLoader__.load({
           }
           return;
         }
+        if (msg.type === 'reload') {
+          // The backend restarted under this page: re-mount so the session
+          // list and the open conversation reconnect to the new process.
+          say('reload: requested by the shell');
+          try { window.location.reload(); } catch (err) { say('reload failed: ' + (err && err.message)); }
+          return;
+        }
         if (msg.type === 'approve') { answerApproval(msg); return; }
         if (msg.type === 'answer') { answerQuestion(msg); return; }
       }

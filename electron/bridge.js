@@ -35,6 +35,60 @@ export function bridgeInfo() {
   }
 }
 
+const DEFAULT_ATTEMPTS = 20
+const DEFAULT_INTERVAL_MS = 500
+
+/**
+ * Deliver a decision, opening the app first when nobody is listening yet.
+ *
+ * A window that was just started needs a moment before its page reconnects to
+ * the loop-back route, so frames sent in that gap are dropped. Repeats are
+ * safe: the page ignores an approve/answer it has no pending interaction for,
+ * and a repeated goto just opens the same session again.
+ *
+ * @param {{ type: 'goto'|'approve'|'answer', sessionId: string }} payload
+ * @param {{ forward?: () => Promise<unknown>, open?: () => Promise<unknown>,
+ *   send?: (p: object) => Promise<number>, attempts?: number, intervalMs?: number,
+ *   sleep?: (ms: number) => Promise<void> }} [options]
+ * @returns {Promise<number>} pages that finally accepted the frame (0 = gave up)
+ */
+export async function deliverWithRetry(
+  payload,
+  {
+    forward,
+    open = async () => {},
+    send = sendDecision,
+    attempts = DEFAULT_ATTEMPTS,
+    intervalMs = DEFAULT_INTERVAL_MS,
+    sleep = defaultSleep,
+  } = {},
+) {
+  // A frame that makes the page jump is pointless behind another window: the
+  // user asked to see that session, so surface the window first. A failed
+  // forward must still deliver — the page swap is the part that matters.
+  if (forward) {
+    try {
+      await forward()
+    } catch {
+      // delivery is still worth attempting
+    }
+  }
+  let delivered = await send(payload)
+  if (delivered > 0) return delivered
+  await open()
+  // The first send already happened, so the budget counts from there.
+  for (let i = 1; i < attempts; i++) {
+    await sleep(intervalMs)
+    delivered = await send(payload)
+    if (delivered > 0) return delivered
+  }
+  return delivered
+}
+
+function defaultSleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
 /**
  * Deliver one decision frame to every open page.
  *

@@ -18,6 +18,9 @@ import { detect } from './service.js'
 import { setupAutoUpdater } from './update.js'
 import { initOverlay, applyOverlayConfig, disposeOverlay } from './overlay.js'
 import { openDsh } from './open-dsh.js'
+import { deliverWithRetry } from './bridge.js'
+import { watchBackend } from './backend-watch.js'
+import { trace } from './trace.js'
 import { APP_USER_MODEL_ID } from './aumid.js'
 import { setupCrashGuard } from './crashGuard.js'
 
@@ -61,9 +64,10 @@ if (!gotLock) {
   app.quit()
 } else {
   let tray = null
+  let stopBackendWatch = null
 
   app.on('second-instance', () => {
-    openDsh()
+    void openDsh()
   })
 
   /**
@@ -94,7 +98,7 @@ if (!gotLock) {
     if (!isMac) Menu.setApplicationMenu(null)
 
     tray = createTray({
-      onOpen: () => openDsh(),
+      onOpen: () => void openDsh(),
       onQuit: () => {
         app.isQuitting = true
         app.quit()
@@ -110,10 +114,27 @@ if (!gotLock) {
     // Backend bootstrap in background (never delays the tray).
     bootstrapBackend().catch(() => {})
 
+    // A restart leaves every open page holding a dead socket. Watch for the
+    // new process answering, then ask the pages to re-mount. Local targets
+    // only: our backend coming back says nothing about a remote one.
+    const target = loadConfig().targetUrl || DEFAULT_TARGET_URL
+    if (new URL(target).origin === new URL(DEFAULT_TARGET_URL).origin) {
+      stopBackendWatch = watchBackend({
+        url: target,
+        onRestart: () => {
+          // Nobody listening → give up quietly rather than launching a window
+          // the user did not ask for.
+          deliverWithRetry({ type: 'reload' }, { attempts: 30, intervalMs: 500 }).then((n) => {
+            trace('backend restart → reload delivered to ' + n + ' page(s)')
+          })
+        },
+      })
+    }
+
     // Windows: wire the auto-updater (downloads new installers silently).
     setupAutoUpdater()
 
-    app.on('activate', () => openDsh())
+    app.on('activate', () => void openDsh())
   })
 
   app.on('window-all-closed', () => {
@@ -125,6 +146,7 @@ if (!gotLock) {
 
   app.on('before-quit', () => {
     app.isQuitting = true
+    if (stopBackendWatch) stopBackendWatch()
     disposeOverlay()
   })
 }

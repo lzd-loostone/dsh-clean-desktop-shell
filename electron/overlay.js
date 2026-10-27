@@ -22,7 +22,7 @@
  *                   orbSize, bubbleTimeout, edgeSnap }
  */
 import { app, BrowserWindow, ipcMain, screen } from 'electron'
-import { existsSync, readFileSync, unwatchFile, watchFile, appendFileSync, statSync, rmSync } from 'node:fs'
+import { existsSync, readFileSync, unwatchFile, watchFile } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -31,8 +31,9 @@ import { getStatus } from './service.js'
 import { startBackend, restartBackend, stopBackend } from './backend-actions.js'
 import { createReadStore } from './read-store.js'
 import { orbArea as orbAreaOf, orbWinX as orbWinXOf, orbWinY as orbWinYOf } from './orb-geometry.js'
-import { sendDecision } from './bridge.js'
+import { deliverWithRetry } from './bridge.js'
 import { openDsh } from './open-dsh.js'
+import { trace } from './trace.js'
 import {
   pickApprovalInfo,
   computeApprovalBounds,
@@ -153,21 +154,6 @@ function readMarksFile() {
 }
 const readStore = createReadStore(readMarksFile())
 readStore.load()
-
-/** Deep-link tracing: every row-click hop (main/preload/client) appends a
- *  line here so a jump failure pinpoints its broken stage. */
-function traceFile() {
-  return join(app.getPath('userData'), 'overlay-trace.log')
-}
-function trace(msg) {
-  try {
-    const f = traceFile()
-    try {
-      if (statSync(f).size > 256 * 1024) rmSync(f, { force: true }) // rolling cap
-    } catch { /* first write */ }
-    appendFileSync(f, new Date().toISOString() + ' ' + msg + '\n', 'utf8')
-  } catch { /* tracing must never break the overlay */ }
-}
 
 // ---------- display derivation ----------
 
@@ -847,7 +833,7 @@ function registerIpc() {
       // where the full conversation (and the native approval control) lives.
       trace('approval-detail ' + id)
       closeBubble()
-      openDsh()
+      void openDsh()
       return
     }
     if (action === 'want-input') {
@@ -934,7 +920,7 @@ function registerIpc() {
     if (!dragMoved) {
       trace('orb-click')
       if (bubbleOpen) closeBubble()
-      openDsh()
+      void openDsh()
       return
     }
     if (cfg.edgeSnap) {
@@ -1021,7 +1007,7 @@ function registerIpc() {
 
   ipcMain.on('menu:action', (_e, id) => {
     closeMenu()
-    if (id === 'open') openDsh()
+    if (id === 'open') void openDsh()
     else if (id === 'start') startBackend()
     else if (id === 'restart') restartBackend()
     else if (id === 'stop') stopBackend()
@@ -1040,12 +1026,14 @@ function registerIpc() {
  * left where the action can be completed — the browser.
  */
 function deliver(payload) {
-  sendDecision(payload).then((n) => {
+  deliverWithRetry(payload, {
+    open: openDsh,
+    // A row click means "show me that session", so the window comes forward
+    // before the page swaps; approve/answer stay in place.
+    forward: payload.type === 'goto' ? openDsh : undefined,
+  }).then((n) => {
     trace('deliver ' + payload.type + ' → ' + n + ' page(s)')
-    if (!n) {
-      trace(payload.type + ': nobody listening, opening browser')
-      openDsh()
-    }
+    if (!n) trace(payload.type + ': no page answered after opening the app')
   })
 }
 
