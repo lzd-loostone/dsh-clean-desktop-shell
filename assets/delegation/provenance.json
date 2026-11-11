@@ -1,0 +1,31 @@
+{
+  "asset": "assets/delegation/ptc-rc5.yml",
+  "upstream": "https://github.com/deepseek-ai/deepseek-harness",
+  "sourcePath": "packages/bundle/web-app/presets/ptc.patch.yml",
+  "tag": "dsh-v0.2.1-rc.5",
+  "commit": "b830ec950faba0a46dda564be3e2d854afed94f1",
+  "sourceUrl": "https://github.com/deepseek-ai/deepseek-harness/blob/b830ec950faba0a46dda564be3e2d854afed94f1/packages/bundle/web-app/presets/ptc.patch.yml",
+  "sha256": "9e355c947bf61c3d2fe9bf3214b386f83c0d99d37579ce22576d4b82cb6e1a2c",
+  "lineCount": 134,
+  "license": {
+    "spdx": "MIT",
+    "sourceUrl": "https://github.com/deepseek-ai/deepseek-harness/blob/b830ec950faba0a46dda564be3e2d854afed94f1/LICENSE",
+    "copyright": "Copyright (c) 2026 DeepSeek",
+    "notice": "MIT License\n\nCopyright (c) 2026 DeepSeek\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof this software and associated documentation files (the \"Software\"), to deal\nin the Software without restriction, including without limitation the rights\nto use, copy, modify, merge, publish, distribute, sublicense, and/or sell\ncopies of the Software, and to permit persons to whom the Software is\nfurnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all\ncopies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\nIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\nFITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\nAUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\nLIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\nOUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\nSOFTWARE.\n"
+  },
+  "persona": {
+    "asset": "assets/delegation/persona.md",
+    "source": "approved-current-rule-block",
+    "sourceLines": "225-310",
+    "routePlaceholder": "{{workerRouteLabel}}",
+    "sha256": "bfaf606606279c249b19416ca8e5a39219aa2c330f772ca46ca7130daf462e85",
+    "changes": ["Remove YAML indentation and replace the personal worker provider/model with the snapshot-rendered route label."]
+  },
+  "factory": {
+    "source": "src/host/delegation-preset.js",
+    "baseline": "Canonical ordinary JS transcription of the complete pinned official declaration.",
+    "platformConditions": ["process.platform === 'win32'", "process.platform !== 'win32'"],
+    "platformEvaluation": "Evaluate the official conditions as booleans while constructing the Host definition; do not parse YAML or use eval.",
+    "allowedDifferences": ["id/name/description", "persona prefix", "spawn config", "fork config", "disabled workflow entries", "own delegation-gate addition"]
+  }
+}

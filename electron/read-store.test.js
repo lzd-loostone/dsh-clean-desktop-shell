@@ -13,6 +13,7 @@ import {
   pruneReadMap,
   createReadStore,
   MAX_READ_ENTRIES,
+  normalizeSnapshot,
 } from './read-store.js'
 
 function tmpFile(name) {
@@ -139,4 +140,80 @@ test('createReadStore: load tolerates a corrupt file and next save heals it', ()
 
 test('MAX_READ_ENTRIES is a sane positive cap', () => {
   assert.ok(Number.isInteger(MAX_READ_ENTRIES) && MAX_READ_ENTRIES > 0)
+})
+
+// ---------- state-file read side (v1 ⇄ v2 compatibility) ----------
+
+const V1_FILE = {
+  v: 1,
+  ts: 1700000000000,
+  disposed: false,
+  sessions: [
+    {
+      id: 's1', name: 'app', running: true, approvals: 0, questions: 0,
+      pendingApprovals: [], pendingQuestions: [],
+      startedAt: 1699999999000, finishedAt: null, lastChangeAt: 1700000000000,
+    },
+    {
+      id: 's2', name: 'docs', running: false, approvals: 1, questions: 0,
+      pendingApprovals: [], pendingQuestions: [],
+      startedAt: 1699999990000, finishedAt: 1699999998000, lastChangeAt: 1700000000000,
+    },
+  ],
+}
+
+test('normalizeSnapshot: a v1 file derives live from running/pending', () => {
+  const node = normalizeSnapshot(V1_FILE)
+  assert.equal(node.v, 1)
+  assert.equal(node.ts, 1700000000000)
+  assert.equal(node.disposed, false)
+  const [running, pending] = node.sessions
+  assert.equal(running.live, true)
+  assert.equal(running.childrenRunning, 0)
+  assert.equal(running.childrenTotal, 0)
+  // waiting for a human is live even though the agent is not running
+  assert.equal(pending.live, true)
+  assert.equal(pending.approvals, 1)
+})
+
+test('normalizeSnapshot: a v2 file keeps its child counters', () => {
+  const node = normalizeSnapshot({
+    v: 2,
+    ts: 5,
+    sessions: [{ id: 's1', name: 'app', running: false, childrenRunning: 2, childrenTotal: 3, live: true }],
+  })
+  const [row] = node.sessions
+  assert.equal(node.v, 2)
+  assert.equal(row.childrenRunning, 2)
+  assert.equal(row.childrenTotal, 3)
+  assert.equal(row.live, true)
+})
+
+test('normalizeSnapshot: an idle v1 row stays not live', () => {
+  const node = normalizeSnapshot({ sessions: [{ id: 'x', running: false }] })
+  assert.equal(node.sessions[0].live, false)
+  assert.equal(node.sessions[0].childrenRunning, 0)
+  assert.equal(node.sessions[0].childrenPending, 0)
+})
+
+test('normalizeSnapshot: a parents row keeps the child pending count', () => {
+  const node = normalizeSnapshot({ v: 2, sessions: [{ id: 'p', childrenRunning: 1, childrenPending: 2 }] })
+  assert.equal(node.sessions[0].childrenPending, 2)
+})
+
+test('normalizeSnapshot: missing/garbage input never throws', () => {
+  for (const bad of [null, undefined, 42, 'nope', {}, { sessions: 'x' }, { sessions: [null, 3] }]) {
+    const node = normalizeSnapshot(bad)
+    assert.ok(Array.isArray(node.sessions))
+    assert.equal(node.disposed, false)
+    assert.deepEqual(node.orphanChildren, { running: 0, total: 0 })
+  }
+})
+
+test('normalizeSnapshot: orphan bucket is defaulted for v1 files', () => {
+  assert.deepEqual(normalizeSnapshot(V1_FILE).orphanChildren, { running: 0, total: 0 })
+  assert.deepEqual(
+    normalizeSnapshot({ v: 2, orphanChildren: { running: 1 }, sessions: [] }).orphanChildren,
+    { running: 1, total: 0 },
+  )
 })

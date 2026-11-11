@@ -29,7 +29,8 @@ import { fileURLToPath } from 'node:url'
 import { loadOverlay, saveOverlay } from './config.js'
 import { getStatus } from './service.js'
 import { startBackend, restartBackend, stopBackend } from './backend-actions.js'
-import { createReadStore } from './read-store.js'
+import { createReadStore, normalizeSnapshot } from './read-store.js'
+import { badgeState, ringState } from './overlay-ring.js'
 import { orbArea as orbAreaOf, orbWinX as orbWinXOf, orbWinY as orbWinYOf } from './orb-geometry.js'
 import { deliverWithRetry } from './bridge.js'
 import { openDsh } from './open-dsh.js'
@@ -182,22 +183,32 @@ function buildDisplay() {
 
   const rows = []
   const seen = new Set()
+  let runningCount = 0
+  // Children that are moving right now, across every session (orphans have
+  // no row of their own but still mean "work is happening").
+  let childRunning = snap && snap.orphanChildren ? snap.orphanChildren.running || 0 : 0
   for (const s of list) {
     seen.add(s.id)
+    const ring = ringState(s)
+    if (s.running) runningCount += 1
+    childRunning += s.childrenRunning || 0
     if (s.approvals > 0) {
       const ap = pickApprovalInfo(s)
-      rows.push({ id: s.id, name: s.name, kind: 'approval', at: s.lastChangeAt, ap: ap || undefined })
+      rows.push({ id: s.id, name: s.name, kind: 'approval', at: s.lastChangeAt, ap: ap || undefined, ring, live: true })
     }
     else if (s.questions > 0) {
       const q = pickQuestionInfo(s)
-      rows.push({ id: s.id, name: s.name, kind: 'question', at: s.lastChangeAt, q: q || undefined })
+      rows.push({ id: s.id, name: s.name, kind: 'question', at: s.lastChangeAt, q: q || undefined, ring, live: true })
     }
-    else if (s.running) rows.push({ id: s.id, name: s.name, kind: 'running', at: s.startedAt || s.lastChangeAt })
+    // A session whose own agent is idle but whose children are busy stays on
+    // the list: the row is where the ring lives.
+    else if (s.running || ring.visible) rows.push({ id: s.id, name: s.name, kind: 'running', at: s.startedAt || s.lastChangeAt, ring, live: true })
   }
-  const runningCount = rows.length
   for (const [id, u] of unread) {
-    if (seen.has(id) && list.find((s) => s.id === id && (s.running || s.approvals > 0 || s.questions > 0))) continue
-    rows.push({ id, name: u.name, kind: 'done', at: u.at })
+    // Still live under any head (running, waiting, or children busy) → the
+    // live row already carries it; never list the same session twice.
+    if (seen.has(id) && list.find((s) => s.id === id && (s.running || s.approvals > 0 || s.questions > 0 || s.childrenRunning > 0))) continue
+    rows.push({ id, name: u.name, kind: 'done', at: u.at, ring: ringState(null), live: false })
   }
   const order = { approval: 0, question: 1, running: 2, done: 3 }
   rows.sort((a, b) => (order[a.kind] - order[b.kind]) || (b.at - a.at))
@@ -208,7 +219,17 @@ function buildDisplay() {
     question: rows.some((r) => r.kind === 'question'),
     unread: rows.some((r) => r.kind === 'done'),
   }
-  return { mode, runningCount, rows, attention, now }
+  // Idle backend = nothing to count; a stale snapshot must never leave a
+  // number floating over a grey orb.
+  const dead = mode === 'offline' || mode === 'missing'
+  const orphans = snap && snap.orphanChildren ? snap.orphanChildren : { running: 0, total: 0 }
+  const badge = dead
+    ? badgeState([])
+    : badgeState(rows, { extraLive: orphans.running > 0 ? 1 : 0 })
+  // Solid ring = the session itself works; slow breathing = only its
+  // children do (the orb must not look as busy as a running turn).
+  const breathing = !dead && runningCount === 0 && childRunning > 0
+  return { mode, runningCount, rows, attention, now, badge, breathing }
 }
 
 /** True when a row entered an attention kind since the last tick. */
@@ -592,6 +613,8 @@ function sendOrbState(full) {
     mode: full.mode,
     runningCount: full.runningCount,
     attention: full.attention,
+    badge: full.badge,
+    breathing: full.breathing,
   })
 }
 
@@ -639,7 +662,9 @@ function syncOrbBounds() {
 
 function readStateFile() {
   try {
-    applySnapshot(JSON.parse(readFileSync(stateFile(), 'utf8')))
+    // normalizeSnapshot absorbs both directions of the version handoff: a v1
+    // file from a not-yet-restarted backend, or a v2 file from a newer one.
+    applySnapshot(normalizeSnapshot(JSON.parse(readFileSync(stateFile(), 'utf8'))))
   } catch {
     snap = null
     sendDisplay()

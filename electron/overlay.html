@@ -66,6 +66,15 @@
   }
   .orb.active .ring { opacity: 1; animation: spin 1.5s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
+  /* Children working while the session itself is idle: a slow breath, never
+     the solid highlight a running turn gets. Opacity only, so it can never
+     fight the hover transform on the same element. */
+  .orb.breathing { animation: breathe 3.2s ease-in-out infinite; }
+  @keyframes breathe { 0%, 100% { opacity: .82; } 50% { opacity: 1; } }
+  @media (prefers-reduced-motion: reduce) {
+    .orb.breathing { animation: none; opacity: 1; }
+    .orb .ring { animation: none !important; }
+  }
   .badge {
     position: absolute; top: -4px; right: -4px;
     min-width: 18px; height: 18px;
@@ -80,7 +89,9 @@
     border-radius: 9px;
     pointer-events: none;
   }
-  .orb.active .badge { display: flex; }
+  /* Visibility is the count's decision (badgeState), not the orb mode's. */
+  .badge.show { display: flex; }
+  .badge.attention { background: #fbbf24; color: #1f2937; }
   /* Docked right → the right half is clipped → keep badges on the visible side. */
   .stage.edge-right .badge { right: auto; left: -4px; }
   .stage.edge-right .att { right: auto; left: 0; }
@@ -130,8 +141,13 @@
     var orb = document.getElementById('orb')
     document.getElementById('stage').classList.toggle('edge-right', !!d.edgeSnap && !!d.docked && d.side === 'right')
     applyShift()
-    orb.className = 'orb' + (d.mode === 'active' ? ' active' : d.mode === 'idle' ? '' : ' ' + d.mode)
-    document.getElementById('badge').textContent = String(d.runningCount || 0)
+    orb.className = 'orb' + (d.mode === 'active' ? ' active' : d.mode === 'idle' ? '' : ' ' + d.mode) + (d.breathing ? ' breathing' : '')
+    // The badge shows live SESSIONS (running, children busy, or waiting for a
+    // human) and disappears at zero — it is not tied to the orb's own mode.
+    var badge = d.badge || { visible: false, label: '0', tone: 'idle' }
+    var badgeEl = document.getElementById('badge')
+    badgeEl.textContent = badge.label || '0'
+    badgeEl.className = 'badge' + (badge.visible ? ' show' : '') + (badge.tone === 'attention' ? ' attention' : '')
     var att = document.getElementById('att')
     var a = d.attention || {}
     var want = a.approval ? 'approval' : a.question ? 'question' : a.unread ? 'done' : null

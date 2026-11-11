@@ -19,7 +19,8 @@ import { setupAutoUpdater } from './update.js'
 import { initOverlay, applyOverlayConfig, disposeOverlay } from './overlay.js'
 import { openDsh } from './open-dsh.js'
 import { deliverWithRetry } from './bridge.js'
-import { watchBackend } from './backend-watch.js'
+import { watchBackend, timedProbe } from './backend-watch.js'
+import { probe } from './probe.js'
 import { trace } from './trace.js'
 import { APP_USER_MODEL_ID } from './aumid.js'
 import { setupCrashGuard } from './crashGuard.js'
@@ -121,6 +122,15 @@ if (!gotLock) {
     if (new URL(target).origin === new URL(DEFAULT_TARGET_URL).origin) {
       stopBackendWatch = watchBackend({
         url: target,
+        // Every probe lands in the trace log: a disputed reload can then be
+        // explained instead of guessed at.
+        probe: timedProbe(probe, trace),
+        // Keep the tray and orb labels honest: they offer "启动后端" whenever
+        // the cached status says stopped, and the shell is spawned before the
+        // backend binds its port.
+        onChange: () => {
+          void detect().catch(() => {})
+        },
         onRestart: () => {
           // Nobody listening → give up quietly rather than launching a window
           // the user did not ask for.

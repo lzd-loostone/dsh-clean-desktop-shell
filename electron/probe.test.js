@@ -8,7 +8,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { once } from 'node:events'
-import { probe } from './probe.js'
+import { probe, probeOutcome, DEFAULT_PROBE_TIMEOUT_MS } from './probe.js'
 
 async function listen(handler) {
   const server = createServer(handler)
@@ -41,13 +41,17 @@ test('a 5xx answer is a miss', async () => {
   }
 })
 
-test('answering late is a miss, and the budget is honoured', async () => {
+test('a late answer is a timeout, not a death, and the budget is honoured', async () => {
   const { server, url } = await listen((_req, _res) => {
     /* never answer — the request just hangs */
   })
   try {
     const started = Date.now()
-    assert.equal(await probe(url, 200), false)
+    // A busy backend answers late while still serving the open page. Grading
+    // that as down is what made the orb flash 后端未连接 and recover; the
+    // honest verdict is "nothing proven", so `probe()` keeps the previous state.
+    assert.equal((await probeOutcome(url, 200)).kind, 'timeout')
+    assert.equal(await probe(url, 200), true)
     assert.ok(Date.now() - started < 2000, 'the probe budget must be honoured')
   } finally {
     server.close()
@@ -63,4 +67,43 @@ test('nothing listening on the port is a miss', async () => {
   await once(server, 'close')
   await closed
   assert.equal(await probe(url, 1000), false)
+})
+
+test('401 is alive but reported as unauthenticated', async () => {
+  const { server, url } = await listen((_req, res) => {
+    res.writeHead(401)
+    res.end()
+  })
+  try {
+    // A generous budget on purpose: this asserts the classification, and the
+    // full suite runs these files in parallel (a starved loop would otherwise
+    // turn a live server into a timeout).
+    assert.deepEqual(await probeOutcome(url, 5000), { kind: 'unauthenticated', status: 401 })
+    assert.equal(await probe(url, 5000), true)
+  } finally {
+    server.close()
+  }
+})
+
+test('200 is ok and 502 is unhealthy', async () => {
+  const ok = await listen((_req, res) => {
+    res.writeHead(200)
+    res.end()
+  })
+  const bad = await listen((_req, res) => {
+    res.writeHead(502)
+    res.end()
+  })
+  try {
+    assert.equal((await probeOutcome(ok.url, 5000)).kind, 'ok')
+    assert.equal((await probeOutcome(bad.url, 5000)).kind, 'unhealthy')
+    assert.equal(await probe(bad.url, 5000), false)
+  } finally {
+    ok.server.close()
+    bad.server.close()
+  }
+})
+
+test('the default budget is three seconds', () => {
+  assert.equal(DEFAULT_PROBE_TIMEOUT_MS, 3000)
 })

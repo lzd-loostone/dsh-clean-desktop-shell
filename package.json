@@ -1,6 +1,6 @@
 {
   "name": "dsh-clean-desktop-shell",
-  "version": "0.4.1",
+  "version": "0.5.1",
   "description": "Desktop companion for DeepSeek Harness (DSH) as a DSH plugin — system tray plus an edge-docked task bubble, no window of its own: the DSH page stays in your browser. DSH 插件形态的桌面辅助壳：托盘 + 任务气泡，不接管浏览器。",
   "repository": {
     "type": "git",
@@ -17,6 +17,7 @@
     "electron/",
     "src/",
     "scripts/",
+    "assets/delegation/**",
     "build/icon.png",
     "build/icon.ico",
     "cordis.patch.yml",
@@ -29,16 +30,20 @@
   "exports": {
     ".": "./lib/index.js",
     "./client": "./lib/client.js",
+    "./delegation": "./lib/host/delegation.js",
+    "./delegation-gate": "./lib/host/delegation-gate.js",
+    "./delegation-gate-ports": "./lib/host/delegation-gate-ports.js",
     "./package.json": "./package.json"
   },
   "scripts": {
     "build": "node scripts/build.mjs",
-    "check": "node scripts/check-syntax.mjs && node scripts/selftest-runtime.mjs",
+    "check": "node scripts/check-syntax.mjs && node scripts/selftest-runtime.mjs && node scripts/check-preset-snapshot.mjs",
     "dev": "electron electron/main.js",
     "test": "node --test \"electron/*.test.js\" \"src/host/*.test.js\" \"src/client/*.test.js\"",
     "icons": "node scripts/gen-icons.mjs",
     "pack": "electron-builder --win nsis",
-    "pack:mac": "electron-builder --mac dmg"
+    "pack:mac": "electron-builder --mac dmg",
+    "test:contract": "node scripts/run-contract-tests.mjs"
   },
   "dsh": {
     "bundle": {
@@ -55,10 +60,18 @@
     }
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh": "*"
+    "@deepseek-ai/dsh": "*",
+    "@deepseek-ai/dsh-scope": "*",
+    "@deepseek-ai/dsh-session": "*"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/dsh": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-scope": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-session": {
       "optional": true
     }
   },

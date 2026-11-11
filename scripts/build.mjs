@@ -1,28 +1,13 @@
 #!/usr/bin/env node
-// Minimal zero-dependency build: copies src → lib.
+// Minimal zero-dependency build: copies src → lib and composes the client bundle.
 // Real bundling (tsdown/vite) lands with the Electron shell work.
 //
-// Uses read+write (not cpSync/rmSync): Windows cpSync fails to overwrite
-// existing files, and the sandbox's safe-delete shim intercepts rmSync.
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+// The copy/inline mechanics live in build-lib.mjs so the package regression test
+// exercises the exact same composition instead of a second implementation.
+import { dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { buildLib } from './build-lib.mjs'
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)))
-mkdirSync(join(root, 'lib'), { recursive: true })
-
-const pairs = [
-  ['src/host/index.js', 'lib/index.js'],
-  ['src/host/common.js', 'lib/common.js'],
-  ['src/host/runtime.js', 'lib/runtime.js'],
-  ['src/host/icon.js', 'lib/icon.js'],
-  ['src/host/session-events.js', 'lib/session-events.js'],
-  ['src/host/approval-details.js', 'lib/approval-details.js'],
-  ['src/host/bridge.js', 'lib/bridge.js'],
-  ['src/host/question-details.js', 'lib/question-details.js'],
-  ['src/client/client.js', 'lib/client.js'],
-]
-for (const [src, dest] of pairs) {
-  writeFileSync(join(root, dest), readFileSync(join(root, src)))
-}
-console.log('[dsh-clean-desktop-shell] built lib/ from src/')
+const { files, clientSha256 } = buildLib({ root })
+console.log(`[dsh-clean-desktop-shell] built lib/ from src/ (${files.length} files, client sha256 ${clientSha256})`)

@@ -14,6 +14,11 @@
  * (`$DSH_HOME/desktop-shell-read.json`), written atomically (tmp + rename).
  * Every failure path is swallowed — losing read marks degrades to the old
  * in-memory behaviour, it must never break the overlay.
+ *
+ * This module also owns the READ side of the host's state file
+ * (`normalizeSnapshot`): both files are cross-version handoffs between a
+ * backend that may be newer than the shell and vice versa, so defaults live
+ * here, next to the read marks, rather than inside the window code.
  */
 
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
@@ -82,13 +87,86 @@ export function pruneReadMap(map, activeIds, max = MAX_READ_ENTRIES) {
   return map
 }
 
+// ---------- state-file read side (desktop-shell-state.json) ----------
+//
+// The state file is a cross-version handoff: the host half may be newer than
+// the shell (old shell reads a v2 file) or older (v2 shell reads a v1 file
+// left by a not-yet-restarted backend). Every field below is therefore
+// defaulted here instead of trusted, and the shell never branches on `v`:
+// a v1 row simply has no child counters, so `live` is derived from what the
+// v1 writer did record.
+
+/** Finite number or the fallback. */
+function num(value, fallback = 0) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback
+}
+
+/** Non-negative integer count. */
+function count(value) {
+  return Math.max(0, Math.trunc(num(value)))
+}
+
+/** Finite timestamp or null (the UI renders "no time" as absence). */
+function stamp(value) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+/**
+ * Normalize one parsed state file into the shape the overlay renders.
+ * Unknown/corrupt entries are dropped rather than half-filled, so a damaged
+ * row cannot crash a send.
+ * @param {unknown} raw parsed JSON (any version, possibly garbage)
+ * @returns {{v:number, ts:number, disposed:boolean, sessions:object[], orphanChildren:{running:number,total:number}}}
+ */
+export function normalizeSnapshot(raw) {
+  const src = raw && typeof raw === 'object' ? raw : {}
+  const list = Array.isArray(src.sessions) ? src.sessions : []
+  const sessions = []
+  for (const s of list) {
+    if (!s || typeof s !== 'object') continue
+    const id = typeof s.id === 'string' ? s.id : ''
+    if (!id) continue
+    const running = s.running === true
+    const approvals = count(s.approvals)
+    const questions = count(s.questions)
+    const childrenRunning = count(s.childrenRunning)
+    const childrenPending = count(s.childrenPending)
+    const childrenTotal = Math.max(childrenRunning, count(s.childrenTotal))
+    sessions.push({
+      id,
+      name: typeof s.name === 'string' && s.name ? s.name : id,
+      running,
+      approvals,
+      questions,
+      pendingApprovals: Array.isArray(s.pendingApprovals) ? s.pendingApprovals : [],
+      pendingQuestions: Array.isArray(s.pendingQuestions) ? s.pendingQuestions : [],
+      startedAt: stamp(s.startedAt),
+      finishedAt: stamp(s.finishedAt),
+      lastChangeAt: stamp(s.lastChangeAt),
+      // v1 writers had no `live`/child fields: derive rather than default to
+      // false, which would hide an idle-looking session that awaits a human.
+      live: typeof s.live === 'boolean' ? s.live : running || childrenRunning > 0 || approvals + questions > 0 || childrenPending > 0,
+      childrenRunning,
+      childrenPending,
+      childrenTotal,
+    })
+  }
+  const orphans = src.orphanChildren && typeof src.orphanChildren === 'object' ? src.orphanChildren : {}
+  return {
+    v: num(src.v, 1),
+    ts: num(src.ts, 0),
+    disposed: src.disposed === true,
+    sessions,
+    orphanChildren: { running: count(orphans.running), total: count(orphans.total) },
+  }
+}
+
 /**
  * File-backed store. `load()` must be called once at startup; every
  * mutation updates the in-memory map and attempts a best-effort save.
  * @param {string} filePath absolute path of the JSON file
  * @param {{now?: () => number}} [opts] injectable clock for tests
- */
-export function createReadStore(filePath, opts = {}) {
+ */export function createReadStore(filePath, opts = {}) {
   const now = opts.now ?? (() => Date.now())
   /** @type {Map<string, number>} */
   let marks = new Map()

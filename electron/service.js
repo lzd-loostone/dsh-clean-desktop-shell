@@ -14,8 +14,9 @@ import { access } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { loadConfig, DEFAULT_TARGET_URL } from './config.js'
-import { probe } from './probe.js'
+import { probe, probeOutcome } from './probe.js'
 import { parseReadyUrl } from './ready-line.js'
+import { decideStartPlan, shouldRetrySpawn, shouldAbortSpawn } from './start-policy.js'
 
 // The local backend endpoint — derived from the shared default, never a
 // duplicated literal.
@@ -35,6 +36,19 @@ let child = null
 let currentStatus = 'stopped'
 let lastError = null
 let startResolver = null
+/** Last non-empty line the spawned backend printed — the wait's explanation. */
+let lastOutputLine = ''
+
+/** The backend's most recent output line (empty until it prints something). */
+export function getLastOutputLine() {
+  return lastOutputLine
+}
+
+/** Strip ANSI colour codes so the line is readable in the progress card. */
+function plainLine(text) {
+  // eslint-disable-next-line no-control-regex
+  return text.replace(/\u001b\[[0-9;]*m/g, '').trim()
+}
 
 // dsh 0.1.2+ gates the web index behind a per-process launch token: the
 // startup line now reads `dsh web: http://127.0.0.1:3080/?token=…`, and a
@@ -102,12 +116,21 @@ export async function detect() {
  * (or a spawned CLI prints its ready line). Throws on failure.
  */
 export async function start({ backendPath } = {}) {
-  // Already up? An externally-started backend printed its launch token where
-  // we cannot see it — the shell cannot authenticate by itself in that case.
-  const up = await detect()
-  if (up) {
-    authenticatedUrl = null
-    return up
+  const health = await probeOutcome(LOCAL_URL)
+  const plan = decideStartPlan({
+    health: health.kind,
+    hasOwnChild: child !== null,
+    hasToken: authenticatedUrl !== null,
+  })
+
+  // Anything already answering is reused exactly as it is — including a
+  // backend this shell did not spawn. Its launch token is per-process and not
+  // written down, but the browser holds a cookie signed by the persistent
+  // secret, so a plain URL authenticates on its own. Restarting to mint a
+  // token would kill the sessions that backend is serving.
+  if (plan === 'reuse') {
+    setStatus('running')
+    return authenticatedUrl ?? LOCAL_URL
   }
 
   // Backend path: explicit config → common locations → PATH.
@@ -117,13 +140,50 @@ export async function start({ backendPath } = {}) {
     throw new Error(lastError)
   }
 
-  setStatus('starting')
-
   // Windows: .cmd/.bat cannot be spawned directly — EINVAL. Route them
   // through the shell so `dsh.cmd web` behaves like a normal terminal.
   const isCmd = process.platform === 'win32' && /\.(cmd|bat)$/i.test(resolved.command)
   const command = isCmd ? `"${resolved.command}"` : resolved.command
 
+  setStatus('starting')
+
+  // A failed spawn is usually the previous process still holding the port.
+  // Clearing the port and retrying once turns the reported "first start
+  // always fails, click it twice" into one successful start; a second failure
+  // is a real one and must surface to the user.
+  let attempt = 1
+  for (;;) {
+    const portFree = await ensurePortFree(DEFAULT_PORT)
+    // `dsh web` does not refuse a taken port — it starts a second backend on
+    // another one, and the shell would call that success while the page the
+    // user wanted still answers from the first process. Refuse instead.
+    if (shouldAbortSpawn(portFree)) {
+      setStatus('error', `端口 ${DEFAULT_PORT} 仍被占用，已停止启动，避免起第二个后端实例。`)
+      throw new Error(lastError)
+    }
+    try {
+      return await spawnAndWait(command, resolved, isCmd)
+    } catch (err) {
+      if (child) {
+        const proc = child
+        child = null
+        await terminate(proc)
+      }
+      if (!shouldRetrySpawn(attempt)) throw err
+      attempt += 1
+    }
+  }
+}
+
+/**
+ * Spawn the backend once and resolve when it answers (ready line or probe).
+ *
+ * @param {string} command — already quoted when it is a Windows .cmd shim
+ * @param {{ command: string, args: string[], env?: object }} resolved
+ * @param {boolean} isCmd
+ * @returns {Promise<string>} the authenticated URL captured from the ready line
+ */
+async function spawnAndWait(command, resolved, isCmd) {
   let spawned = null
   try {
     // --no-open: dsh 0.2.0 opens the default browser by default (web-app
@@ -169,6 +229,7 @@ export async function start({ backendPath } = {}) {
   // Wait for readiness: ready line on stdout/stderr, or the port answering.
   return await new Promise((resolve, reject) => {
     startResolver = { resolve, reject }
+    lastOutputLine = ''
     let stdout = ''
     let stderr = ''
     const timer = setTimeout(async () => {
@@ -189,6 +250,10 @@ export async function start({ backendPath } = {}) {
 
     const onData = () => {
       const text = stdout + stderr
+      // The last line is what the progress card shows while it waits; a long
+      // plugin settle looks indistinguishable from a hang otherwise.
+      const tail = plainLine(text.split(/\r?\n/).filter((line) => plainLine(line).length > 0).pop() ?? '')
+      if (tail) lastOutputLine = tail.slice(0, 200)
       // Only dsh's OWN ready line may set the window target. Plugins print
       // their own loopback URLs while they load (billion-context pins its
       // model channel to a random local port) and dsh 0.2.0 announces its own

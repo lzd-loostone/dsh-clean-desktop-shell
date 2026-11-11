@@ -91,8 +91,47 @@
   .row.done .badge2 { color: var(--text-dim); }
   .row .name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .row.done .name { color: var(--text-dim); }
+  /* Fixed 28px slot at the row end: the ring comes and goes without the
+     title reflowing, and the ellipsis above keeps long names out of it. */
+  .row .tail { flex: none; width: 28px; display: flex; align-items: center; justify-content: flex-end; }
   .row .unread { flex: none; width: 7px; height: 7px; border-radius: 50%; background: #e2e8f0; box-shadow: 0 0 6px rgba(226,232,240,.8); }
   body.light .row .unread { background: #334155; box-shadow: none; }
+  /* Child ring: 22px halo + the count. Only transform/opacity animate. */
+  .row .ring2 {
+    position: relative;
+    width: 22px; height: 22px; flex: none;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 10px; font-weight: 700; line-height: 1;
+    color: #60a5fa;
+    font-variant-numeric: tabular-nums;
+  }
+  .row .ring2::before {
+    content: "";
+    position: absolute; inset: 0; border-radius: 50%;
+    background: conic-gradient(from 0deg,
+      rgba(96, 165, 250, 0) 0 40%,
+      rgba(96, 165, 250, .95) 82%,
+      rgba(96, 165, 250, 0) 100%);
+    -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 2.5px), #000 calc(100% - 2px));
+            mask: radial-gradient(farthest-side, transparent calc(100% - 2.5px), #000 calc(100% - 2px));
+    animation: ringspin 1.8s ease-in-out infinite;
+  }
+  /* Waiting for a human outranks "busy": amber ring, same number. */
+  .row .ring2.attention { color: #fbbf24; }
+  .row .ring2.attention::before {
+    background: conic-gradient(from 0deg,
+      rgba(251, 191, 36, 0) 0 40%,
+      rgba(251, 191, 36, .95) 82%,
+      rgba(251, 191, 36, 0) 100%);
+  }
+  @keyframes ringspin {
+    0%   { transform: rotate(0deg);   opacity: .5; }
+    50%  {                            opacity: 1;  }
+    100% { transform: rotate(360deg); opacity: .5; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .row .ring2::before { animation: none; opacity: 1; }
+  }
   .empty { padding: 10px 16px 16px; color: var(--text-dim); font-size: calc(var(--fs) - 1px); }
   .more { padding: 0 16px 10px; color: var(--text-dim); font-size: calc(var(--fs) - 2px); }
   .row.flash { animation-duration: 1s; animation-timing-function: ease-out; animation-iteration-count: 2; }
@@ -133,7 +172,12 @@
     var rowsEl = document.getElementById('rows')
     var moreEl = document.getElementById('more')
     dot.className = 'dot'
-    if (d.mode === 'idle') { title.textContent = MODE_TITLE.idle; dot.style.background = '#34d399' }
+    var liveRows = (d.rows || []).some(function (r) { return r.kind === 'running' })
+    if (d.mode === 'idle' && liveRows) {
+      // Children are working while the session itself is idle: never claim 空闲.
+      title.textContent = '子 Agent 运行中'; dot.style.background = '#60a5fa'; dot.classList.add('pulse')
+    }
+    else if (d.mode === 'idle') { title.textContent = MODE_TITLE.idle; dot.style.background = '#34d399' }
     else if (d.mode === 'active') { title.textContent = d.runningCount + ' 个会话运行中'; dot.style.background = '#60a5fa'; dot.classList.add('pulse') }
     else { title.textContent = MODE_TITLE[d.mode] || MODE_TITLE.offline; dot.style.background = '#64748b' }
 
@@ -181,11 +225,20 @@
     name.textContent = r.name
     el.appendChild(badge)
     el.appendChild(name)
-    if (r.kind === 'done') {
+    // The end slot is always present (28px) so the ring never shifts the row.
+    var tail = document.createElement('span')
+    tail.className = 'tail'
+    if (r.ring && r.ring.visible) {
+      var ring = document.createElement('span')
+      ring.className = 'ring2' + (r.ring.tone ? ' ' + r.ring.tone : '')
+      ring.textContent = r.ring.label
+      tail.appendChild(ring)
+    } else if (r.kind === 'done') {
       var u = document.createElement('span')
       u.className = 'unread'
-      el.appendChild(u)
+      tail.appendChild(u)
     }
+    el.appendChild(tail)
     if (r.kind === 'approval' || r.kind === 'question') {
       el.addEventListener('mouseenter', function () { window.bubbleAPI.approvalHover(r.id) })
       el.addEventListener('mouseleave', function () { window.bubbleAPI.approvalHover(null) })

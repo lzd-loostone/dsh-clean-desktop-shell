@@ -2,3 +2,12 @@
 - insert:
     - id: clean-desktop-shell
       name: 'dsh-clean-desktop-shell'
+    # Task 6 integration seam: the published preset's `delegation-gate` row cannot carry
+    # function references, so this Host row declares the stateless gate ports as the
+    # `delegationGatePorts` service before any preset generation is registered.
+    - id: clean-desktop-shell-delegation-ports
+      name: 'dsh-clean-desktop-shell/delegation-gate-ports'
+    # Owns the saved workerRoute, publishes the PTC preset and exposes the readonly
+    # `cleanDesktopDelegationRead` namespace for the client settings cell.
+    - id: clean-desktop-shell-delegation
+      name: 'dsh-clean-desktop-shell/delegation'
