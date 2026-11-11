@@ -620,7 +620,7 @@ test('gate allows a restored session without asking when the persisted route mat
   assert.equal(runtime.state.approvals.length, 0);
 });
 
-test('gate asks once when the persisted actual route differs from the configured route', async () => {
+test('a persisted route that differs from the configured one no longer demands a confirmation', async () => {
   const world = makeScopeWorld();
   const runtime = makeRuntime({ sessions: new Map([
     ['parent-a', activationSnapshot()],
@@ -632,66 +632,63 @@ test('gate asks once when the persisted actual route differs from the configured
   const decision = await dispatch(runtime, gate.ctx, { name: 'subagent', callId: 'call-b', agent });
   assert.deepEqual(decision, { kind: 'allow' });
   assert.equal(runtime.state.children, 1);
-  assert.equal(runtime.state.approvals.length, 1);
-  assert.equal(runtime.state.approvals[0].callId, 'call-b');
-  assert.match(runtime.state.approvals[0].reason, /worker-provider \/ worker-model/);
+  // Age is no longer a gate input: the configured route governs the spawn.
+  assert.equal(runtime.state.approvals.length, 0);
 });
 
-test('gate denies a restored session when confirmation is rejected', async () => {
+test('a restored session spawns even when the approval outcome would be rejection', async () => {
   const world = makeScopeWorld();
   const runtime = makeRuntime({ outcome: 'rejected', sessions: new Map([['parent-a', { session: { id: 'parent-a' }, inheritedEventCount: 0, events: [] }]]) });
   const gate = makeGate(world, runtime);
   const agent = makeAgent(world, { id: 'parent-a', firstLiveSeq: 10 });
   gate.ctx.emit('agent/created', { agent, source: 'resume' });
   const decision = await dispatch(runtime, gate.ctx, { name: 'subagent', callId: 'call-b', agent });
-  assert.equal(decision.kind, 'deny');
-  assert.equal(runtime.state.children, 0);
-  assert.equal(runtime.state.approvals.length, 1);
-  assert.match(runtime.state.approvals[0].reason, /WORKER_ROUTE_RECOVERY_UNCONFIRMED/);
+  assert.deepEqual(decision, { kind: 'allow' });
+  assert.equal(runtime.state.children, 1);
+  assert.equal(runtime.state.approvals.length, 0);
 });
 
-test('gate denies a restored spawn when no approval service is composed', async () => {
+test('a restored spawn does not need an approval service at all', async () => {
   const world = makeScopeWorld();
   const runtime = makeRuntime({ sessions: new Map([['parent-a', { session: { id: 'parent-a' }, inheritedEventCount: 0, events: [] }]]) });
   const gate = makeGate(world, runtime, { ports: { approval: undefined } });
   const agent = makeAgent(world, { id: 'parent-a' });
   gate.ctx.emit('agent/created', { agent, source: 'resume' });
   const decision = await dispatch(runtime, gate.ctx, { name: 'subagent', callId: 'call-b', agent });
-  assert.equal(decision.kind, 'deny');
-  assert.match(decision.reason, /WORKER_ROUTE_APPROVAL_UNAVAILABLE/);
-  assert.equal(runtime.state.children, 0);
-  assert.equal(runtime.state.approvals.length, 0);
+  assert.deepEqual(decision, { kind: 'allow' });
+  assert.equal(runtime.state.children, 1);
 });
 
-test('gate denies a restored spawn under a never policy without asking', async () => {
+test('a restored spawn works under a never approval policy', async () => {
+  // The reported bug: this exact combination was a hard deny, so the PTC preset
+  // produced no workers in any session opened before a restart.
   const world = makeScopeWorld();
   const runtime = makeRuntime({ policy: 'never', sessions: new Map([['parent-a', { session: { id: 'parent-a' }, inheritedEventCount: 0, events: [] }]]) });
   const gate = makeGate(world, runtime);
   const agent = makeAgent(world, { id: 'parent-a', firstLiveSeq: 10 });
   gate.ctx.emit('agent/created', { agent, source: 'resume' });
   const decision = await dispatch(runtime, gate.ctx, { name: 'subagent', callId: 'call-b', agent });
-  assert.equal(decision.kind, 'deny');
-  assert.match(decision.reason, /WORKER_ROUTE_APPROVAL_UNAVAILABLE/);
+  assert.deepEqual(decision, { kind: 'allow' });
+  assert.equal(runtime.state.children, 1);
   assert.equal(runtime.state.approvals.length, 0);
-  assert.equal(runtime.state.children, 0);
 });
 
-test('gate does not share one allowed-once grant across distinct calls', async () => {
+test('distinct calls from one restored session are each allowed', async () => {
   const world = makeScopeWorld();
   const runtime = makeRuntime({ sessions: new Map([['parent-a', { session: { id: 'parent-a' }, inheritedEventCount: 0, events: [] }]]) });
   const gate = makeGate(world, runtime);
   const agent = makeAgent(world, { id: 'parent-a', firstLiveSeq: 10 });
   gate.ctx.emit('agent/created', { agent, source: 'resume' });
-  await Promise.all([
+  const decisions = await Promise.all([
     dispatch(runtime, gate.ctx, { name: 'subagent', callId: 'call-1', agent }),
     dispatch(runtime, gate.ctx, { name: 'subagent', callId: 'call-2', agent }),
   ]);
-  assert.equal(runtime.state.approvals.length, 2);
-  assert.deepEqual(new Set(runtime.state.approvals.map((request) => request.callId)), new Set(['call-1', 'call-2']));
+  assert.deepEqual(decisions, [{ kind: 'allow' }, { kind: 'allow' }]);
   assert.equal(runtime.state.children, 2);
+  assert.equal(runtime.state.approvals.length, 0);
 });
 
-test('gate dedupes a repeated ask for the same call and never grants it twice', async () => {
+test('a repeated identical call is allowed twice without a confirmation registry', async () => {
   const world = makeScopeWorld();
   const runtime = makeRuntime({ sessions: new Map([['parent-a', { session: { id: 'parent-a' }, inheritedEventCount: 0, events: [] }]]) });
   const gate = makeGate(world, runtime);
@@ -700,9 +697,9 @@ test('gate dedupes a repeated ask for the same call and never grants it twice', 
   const first = await dispatch(runtime, gate.ctx, { name: 'subagent', callId: 'call-1', agent });
   const second = await dispatch(runtime, gate.ctx, { name: 'subagent', callId: 'call-1', agent });
   assert.deepEqual(first, { kind: 'allow' });
-  assert.equal(second.kind, 'deny');
-  assert.equal(runtime.state.approvals.length, 1);
-  assert.equal(runtime.state.children, 1);
+  assert.deepEqual(second, { kind: 'allow' });
+  assert.equal(runtime.state.children, 2);
+  assert.equal(runtime.state.approvals.length, 0);
 });
 
 test('gate records both lifecycle boundaries and resolves no route during initialization', async () => {
@@ -716,18 +713,15 @@ test('gate records both lifecycle boundaries and resolves no route during initia
   assert.deepEqual([...gate.dispose.diagnostics().boundaries].sort(), ['parent-a', 'parent-b']);
 });
 
-test('gate denies an owned agent whose session cannot be read at all', async () => {
+test('an owned agent with no readable session is still allowed, not denied', async () => {
   const world = makeScopeWorld();
   const runtime = makeRuntime();
   const agent = makeAgent(world, { id: 'parent-a' });
   agent.session = null;
   const gate = makeGate(world, runtime);
   const decision = await dispatch(runtime, gate.ctx, { name: 'subagent', callId: 'call-a', agent });
-  assert.equal(decision.kind, 'deny');
-  assert.match(decision.reason, /WORKER_ROUTE_RECOVERY_UNCONFIRMED/);
-  assert.match(decision.reason, /no lifecycle boundary was recorded/);
-  assert.equal(runtime.state.approvals.length, 0);
-  assert.equal(runtime.state.children, 0);
+  assert.deepEqual(decision, { kind: 'allow' });
+  assert.equal(runtime.state.children, 1);
 });
 
 test('a session created in this process is a startup boundary without any lifecycle event', async () => {
@@ -753,7 +747,7 @@ test('a session older than this process is not a dead end: it goes to the approv
   assert.doesNotMatch(String(decision.reason ?? ''), /no lifecycle boundary was recorded/);
 });
 
-test('install on a live agent derives its boundary so recovery evidence still runs', async () => {
+test('install on a live agent allows a spawn whose persisted route differs', async () => {
   const world = makeScopeWorld();
   const runtime = makeRuntime({ sessions: new Map([
     ['parent-a', activationSnapshot()],
@@ -764,12 +758,11 @@ test('install on a live agent derives its boundary so recovery evidence still ru
   assert.deepEqual(dispose.diagnostics().boundaries, ['parent-a']);
   const decision = await dispatch(runtime, agent.ctx, { name: 'subagent', callId: 'call-b', agent });
   assert.deepEqual(decision, { kind: 'allow' });
-  // The persisted route differs from the configured one, so a live install must ask.
-  assert.equal(runtime.state.approvals.length, 1);
+  assert.equal(runtime.state.approvals.length, 0);
   assert.equal(runtime.state.children, 1);
 });
 
-test('install on a live agent confirms matching evidence without asking', async () => {
+test('install on a live agent allows the spawn without reading recovery evidence', async () => {
   const world = makeScopeWorld();
   const runtime = makeRuntime({ sessions: new Map([
     ['parent-a', activationSnapshot()],
@@ -780,8 +773,7 @@ test('install on a live agent confirms matching evidence without asking', async 
   const decision = await dispatch(runtime, agent.ctx, { name: 'subagent', callId: 'call-b', agent });
   assert.deepEqual(decision, { kind: 'allow' });
   assert.equal(runtime.state.approvals.length, 0);
-  // Two reads (parent + child) prove the recovery reader ran instead of being skipped.
-  assert.equal(runtime.state.reads, 2);
+  assert.equal(runtime.state.reads, 0);
   assert.equal(runtime.state.children, 1);
 });
 
@@ -807,8 +799,8 @@ test('gate denies a pending spawn when it is disposed before the child exists', 
   gate.ctx.emit('agent/created', { agent, source: 'resume' });
   let release;
   const deferred = new Promise((resolvePromise) => { release = resolvePromise; });
-  const original = runtime.sessionQuery.readSession;
-  runtime.sessionQuery.readSession = async (id) => { await deferred; return original(id); };
+  const original = runtime.llm.resolveCallConfig;
+  runtime.llm.resolveCallConfig = async (request, signal) => { await deferred; return original.call(runtime.llm, request, signal); };
   const pending = dispatch(runtime, gate.ctx, { name: 'subagent', callId: 'call-b', agent });
   await new Promise((resolvePromise) => setImmediate(resolvePromise));
   gate.dispose();
@@ -1056,34 +1048,16 @@ test('gate fails closed when scope introspection throws for an owned agent', asy
   assert.equal(runtime.state.children, 0);
 });
 
-test('gate denies a confirmation ask that has no call identity to bind the grant to', async () => {
+test('a call without an identity is allowed: nothing is bound to a grant any more', async () => {
   const world = makeScopeWorld();
   const runtime = makeRuntime({ sessions: new Map([['parent-a', { session: { id: 'parent-a' }, inheritedEventCount: 0, events: [] }]]) });
   const gate = makeGate(world, runtime);
   const agent = makeAgent(world, { id: 'parent-a', firstLiveSeq: 10 });
   gate.ctx.emit('agent/created', { agent, source: 'resume' });
   const decision = await dispatch(runtime, gate.ctx, { name: 'subagent', agent });
-  assert.equal(decision.kind, 'deny');
-  assert.match(decision.reason, /no call identity/);
+  assert.deepEqual(decision, { kind: 'allow' });
+  assert.equal(runtime.state.children, 1);
   assert.equal(runtime.state.approvals.length, 0);
-  assert.equal(runtime.state.children, 0);
-});
-
-test('gate bounds the one-time ask registry and denies beyond the cap', async () => {
-  const world = makeScopeWorld();
-  const runtime = makeRuntime({ sessions: new Map([['parent-a', { session: { id: 'parent-a' }, inheritedEventCount: 0, events: [] }]]) });
-  const gate = makeGate(world, runtime);
-  const agent = makeAgent(world, { id: 'parent-a', firstLiveSeq: 10 });
-  gate.ctx.emit('agent/created', { agent, source: 'resume' });
-  for (let index = 0; index < 256; index += 1) {
-    // eslint-disable-next-line no-await-in-loop -- the registry bound is insertion-ordered
-    assert.deepEqual(await dispatch(runtime, gate.ctx, { name: 'subagent', callId: `call-${index}`, agent }), { kind: 'allow' });
-  }
-  const overflow = await dispatch(runtime, gate.ctx, { name: 'subagent', callId: 'call-overflow', agent });
-  assert.equal(overflow.kind, 'deny');
-  assert.match(overflow.reason, /registry is full/);
-  assert.equal(runtime.state.approvals.length, 256);
-  assert.equal(runtime.state.children, 256);
 });
 
 test('installation rejects a worker route that cannot be encoded into a receipt', () => {

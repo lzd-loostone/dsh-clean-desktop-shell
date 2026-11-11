@@ -1,6 +1,6 @@
 {
   "name": "dsh-clean-desktop-shell",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "Desktop companion for DeepSeek Harness (DSH) as a DSH plugin — system tray plus an edge-docked task bubble, no window of its own: the DSH page stays in your browser. DSH 插件形态的桌面辅助壳：托盘 + 任务气泡，不接管浏览器。",
   "repository": {
     "type": "git",
